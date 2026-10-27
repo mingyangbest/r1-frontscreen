@@ -6,6 +6,9 @@ screen:
   width: 376
   height: 960
   brightness: 36000
+  # 夜间（18:00–06:00，与天气图标同窗口）自动调暗后的背光值
+  # 0 = 关闭夜间调暗；只在昼夜切换瞬间生效，不会覆盖手动调节
+  night_brightness: 12000
   timeout: 300  # 息屏时间（秒），0为常亮
 
 # RGB 灯效

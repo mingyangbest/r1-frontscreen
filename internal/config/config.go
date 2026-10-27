@@ -34,9 +34,12 @@ type ScreenConfig struct {
 	Width      int    `yaml:"width"`
 	Height     int    `yaml:"height"`
 	Brightness int    `yaml:"brightness"`
-	Timeout    int    `yaml:"timeout"`
-	Background string `yaml:"background"`
-	TextColor  string `yaml:"text_color"`
+	// NightBrightness 夜间（18:00–06:00，与天气图标同一窗口）自动调暗后的
+	// 背光值，0 = 关闭夜间调暗。只在昼夜切换瞬间生效，不覆盖手动调节。
+	NightBrightness int    `yaml:"night_brightness"`
+	Timeout         int    `yaml:"timeout"`
+	Background      string `yaml:"background"`
+	TextColor       string `yaml:"text_color"`
 }
 
 type RGBConfig struct {

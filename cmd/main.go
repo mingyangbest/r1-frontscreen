@@ -76,7 +76,12 @@ func main() {
 	rgbCtrl.SetMode(cfg.RGB.Mode, cfg.RGB.Color)
 
 	brightness := hardware.NewBrightnessController(cfg.Hardware.BrightnessPath, 0, 96000)
-	brightness.Set(cfg.Screen.Brightness)
+	// 启动即按昼夜定亮度：夜里重启服务不再被白天亮度闪一下眼。
+	startBright := cfg.Screen.Brightness
+	if ui.IsNight() && cfg.Screen.NightBrightness > 0 {
+		startBright = cfg.Screen.NightBrightness
+	}
+	brightness.Set(startBright)
 
 	// ---------------- Web 面板令牌（2026-09-27 安全修复）----------------
 	//
@@ -114,6 +119,16 @@ func main() {
 	var screenOff bool
 	lastTouchTime := time.Now()
 
+	// ---------------- 夜间自动调暗 ----------------
+	//
+	// 复用天气图标的夜间窗口（18:00–06:00）。只在昼夜窗口切换的瞬间
+	// 调整亮度，不做周期性拉回 —— 夜间通过 Web 面板手动调的亮度不会被
+	// 覆盖，一直保留到下一次跨界。关屏期间跨界不写背光：唤醒路径
+	// （wake）会按当时的昼夜取正确值。
+	nightDim := cfg.Screen.NightBrightness > 0
+	curNight := ui.IsNight()
+	lastNightCheck := time.Now()
+
 	setScreenOff := func(reason string) {
 		if screenOff {
 			return
@@ -127,7 +142,12 @@ func main() {
 		if !screenOff {
 			return
 		}
-		brightness.Set(cfg.Screen.Brightness)
+		// 夜间唤醒用夜间亮度：18:00 后关屏再点亮，不被日间亮度刺到
+		wakeBright := cfg.Screen.Brightness
+		if ui.IsNight() && cfg.Screen.NightBrightness > 0 {
+			wakeBright = cfg.Screen.NightBrightness
+		}
+		brightness.Set(wakeBright)
 		screenOff = false
 		renderer.SetScreenOff(false)
 		lastTouchTime = time.Now()
@@ -306,8 +326,27 @@ func main() {
 			if newCfg, err := config.Load(); err == nil {
 				screenTimeout = time.Duration(newCfg.Screen.Timeout) * time.Second
 				cfg.Screen.Brightness = newCfg.Screen.Brightness
+				cfg.Screen.NightBrightness = newCfg.Screen.NightBrightness
+				nightDim = cfg.Screen.NightBrightness > 0
 			}
 		default:
+		}
+
+		// ---------------- 夜间自动调暗（每 30s 检查一次昼夜切换）----------------
+		if nightDim && time.Since(lastNightCheck) >= 30*time.Second {
+			lastNightCheck = frameStart
+			if n := ui.IsNight(); n != curNight {
+				curNight = n
+				if !screenOff {
+					if n {
+						brightness.Set(cfg.Screen.NightBrightness)
+						log.Println("【夜间调暗】进入夜间窗口（18:00–06:00），背光降至夜间值")
+					} else {
+						brightness.Set(cfg.Screen.Brightness)
+						log.Println("【夜间调暗】退出夜间窗口，背光恢复日间值")
+					}
+				}
+			}
 		}
 
 		// ---------------- 数据采样（每 2 秒）----------------
