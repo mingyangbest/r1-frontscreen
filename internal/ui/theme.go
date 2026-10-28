@@ -111,8 +111,10 @@ func (t *Theme) OnAt(base RGBA, v, warnAt, dangerAt float64) RGBA {
 var themeInk = &Theme{
 	Name: "ink",
 
-	BgTop: C(19, 23, 27),
-	BgBot: C(7, 8, 10),
+	// 2026-10-28 对照效果稿压暗：卡面改用实色 hue 容器后，
+	// 背景必须接近纯黑才能把彩色容器衬出来（原来的 19,23,27 偏灰）
+	BgTop: C(11, 12, 14),
+	BgBot: C(4, 4, 5),
 
 	Card:       RGBA{255, 255, 255, 15},
 	CardBorder: RGBA{255, 255, 255, 26},

@@ -433,18 +433,16 @@ func (r *Renderer) Render(d *DrawCtx) {
 		// —— 环境页的时钟随页面平移进出，再叠加顶栏小时钟会出重影。
 		e := easeInOutCubic(r.animT)
 		if !pageFullTop(r.pages[r.animFrom]) && !pageFullTop(r.pages[r.animTo]) {
-			DrawTopBarClock(c, r.Fonts, r.theme, d.Now)
-			nameCY := TopBarNameCY(r.Fonts, d.Now)
 			// 页名：旧名先淡出、新名后淡入，且**不重叠** ——
 			// 两个字在同一位置交叉淡化会叠出一团糊影，宁可中间空一下。
 			if e < 0.5 {
 				c.SetGlobalAlpha(1 - e*2)
-				DrawTopBarName(c, r.Fonts, r.theme, nameCY, pageNameOf(r.pages[r.animFrom]),
-					r.pageAccent(r.animFrom))
+				DrawTopBarM3(c, r.Fonts, r.theme, pageNameOf(r.pages[r.animFrom]),
+					hintOf(pageNameOf(r.pages[r.animFrom])))
 			} else {
 				c.SetGlobalAlpha((e - 0.5) * 2)
-				DrawTopBarName(c, r.Fonts, r.theme, nameCY, pageNameOf(r.pages[r.animTo]),
-					r.pageAccent(r.animTo))
+				DrawTopBarM3(c, r.Fonts, r.theme, pageNameOf(r.pages[r.animTo]),
+					hintOf(pageNameOf(r.pages[r.animTo])))
 			}
 			c.SetGlobalAlpha(1)
 		}
@@ -472,8 +470,8 @@ func (r *Renderer) Render(d *DrawCtx) {
 			DrawDots(c, acc, r.cur, 918)
 		}
 	} else {
-		// 局部重绘时顶栏只有"分钟"会变 —— 秒不变、页名不变、页签不变。
-		// 拿分钟做判据：没跨分钟就整条跳过，跨了才补画那一条。
+		// 普通页顶栏：大页名 + 滑动提示（无小时钟，对照效果稿）。
+		// 内容不随时间变化，跨分钟的重画检查保留但内容恒定。
 		minute := d.Now.Minute()
 		if !local || minute != r.lastClockMin {
 			if local {
@@ -481,9 +479,8 @@ func (r *Renderer) Render(d *DrawCtx) {
 				c.SetClip(0, 0, c.W, clipTop)
 				r.uploadRects = append(r.uploadRects, Rect{0, 0, c.W, clipTop})
 			}
-			DrawTopBarClock(c, r.Fonts, r.theme, d.Now)
-			DrawTopBarName(c, r.Fonts, r.theme, TopBarNameCY(r.Fonts, d.Now),
-				pageNameOf(r.pages[r.cur]), r.pageAccent(r.cur))
+			DrawTopBarM3(c, r.Fonts, r.theme, pageNameOf(r.pages[r.cur]),
+				hintOf(pageNameOf(r.pages[r.cur])))
 			c.ClearClip()
 			r.lastClockMin = minute
 		}

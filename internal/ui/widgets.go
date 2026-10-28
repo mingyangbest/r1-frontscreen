@@ -21,6 +21,7 @@ const (
 	FzLarge = 40
 	FzBig   = 62
 	FzHuge  = 96
+	FzMega  = 112 // M3 大时钟（对照效果稿 ~130px 视觉高度，配合当前字体宽度取 112）
 )
 
 // 布局常量
@@ -118,6 +119,15 @@ func DrawCardA(c *Canvas, th *Theme, x, y, w, h int, accent RGBA) {
 func DrawCardTonal(c *Canvas, th *Theme, x, y, w, h int, accent RGBA) {
 	c.FillRoundRect(x, y, w, h, CardRad, WithA(accent, 28))
 	c.FillRoundRect(x, y, w, h, CardRad, WithA(th.Text, 5))
+}
+
+// DrawTopBarM3 三页版顶栏：大页名（左）+ 滑动提示（右），无小时钟。
+// 对照效果稿第 2/3 页：「详情」「滑左翻页」。
+func DrawTopBarM3(c *Canvas, fs *FontSet, th *Theme, name, hint string) {
+	DrawTextMixL(c, fs, PadX+4, 64, FzMid, th.Text, name)
+	if hint != "" {
+		DrawTextMixRC(c, fs, c.W-20, 62, FzTiny, th.Dim, hint)
+	}
 }
 
 // DrawCardTitleT tonal 卡标题：文字直接用卡面色相（提亮保证可读）。
