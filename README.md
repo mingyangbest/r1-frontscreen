@@ -93,6 +93,7 @@ docker compose up -d screen   # privileged + /dev/fb0 + host 网络
 
 完整版本历史见 [CHANGELOG.md](CHANGELOG.md)(每个版本打 git tag 并发布 [Release](https://github.com/mingyangbest/r1-frontscreen/releases))。最近更新:
 
+- **v0.4.0 · 2026-10-28**:界面重构为 Material You 三页版——环境(大时钟+天气+多彩 tonal 卡)/详情/系统,新增容器监控与上传下载速度大卡,公网 IP 自动打码
 - **v0.3.0 · 2026-10-28**:屏幕夜间自动调暗——18:00~06:00 背光降至 `night_brightness`,启动/唤醒/跨界均按昼夜取值,不覆盖手动调节
 - **v0.2.0 · 2026-10-28**:夜间天气图标——18:00~06:00 晴天画满月+星、多云画云后小月,卡面色相同步转冷
 - **v0.1.1 · 2026-10-12**:项目改名 R1 FrontScreen;修复 go.sum 缺失导致的编译失败

@@ -57,6 +57,10 @@ type SystemMonitor struct {
 	LoadAvg   [3]float64
 	ProcCount int // 系统当前进程总数
 
+	// Docker 容器（UpdateContainers 每 60s 刷新；-1 = 未知/读不到）
+	ContainersRunning int
+	ContainersTotal   int
+
 	Disk *DiskMonitor
 
 	lastRx, lastTx uint64

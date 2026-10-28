@@ -374,6 +374,7 @@ func main() {
 			// 已彻底删除（连同 internal/monitor/process.go 与 gopsutil/v3/process 依赖）。
 			if time.Since(lastDiskUpdate) >= 60*time.Second {
 				mon.UpdateDisk()
+				mon.UpdateContainers()
 				lastDiskUpdate = frameStart
 			}
 			t4 := time.Now()

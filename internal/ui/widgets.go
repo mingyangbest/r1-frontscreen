@@ -108,6 +108,24 @@ func DrawCardA(c *Canvas, th *Theme, x, y, w, h int, accent RGBA) {
 	c.StrokeRoundRect(x, y, w, h, CardRad, 1, WithA(accent, 64))
 }
 
+// DrawCardTonal M3 tonal 卡片（Material You 三页版）：无描边、
+// 卡面 = 语义色的低透明涂层 + 一层极淡的抬亮。
+//
+// 与 DrawCardA 的区别：tonal 卡**不再靠描边**标记身份，色相直接铺在
+// 卡面上（alpha 28，比旧版色温浓一倍），视觉上是一整块安静的彩色面 ——
+// 这正是 Material Design 3 的 container 色语言：多彩来自卡与卡之间，
+// 克制来自卡内部只有一种色相。
+func DrawCardTonal(c *Canvas, th *Theme, x, y, w, h int, accent RGBA) {
+	c.FillRoundRect(x, y, w, h, CardRad, WithA(accent, 28))
+	c.FillRoundRect(x, y, w, h, CardRad, WithA(th.Text, 5))
+}
+
+// DrawCardTitleT tonal 卡标题：文字直接用卡面色相（提亮保证可读）。
+// 无色条 —— 色相已经在卡面上了，再插色条就重复。
+func DrawCardTitleT(c *Canvas, fs *FontSet, x, y int, text string, accent RGBA) {
+	DrawTextMixL(c, fs, x, y, FzTiny, Lit(accent, 0.45), text)
+}
+
 // DrawCardTitle 卡片标题：小号、比正文标签更亮，形成三级文字层次。
 // 走混排，让标题里的英文/数字（CPU、RPM、GB）用拉丁细体，与正文一致。
 func DrawCardTitle(c *Canvas, fs *FontSet, th *Theme, x, y int, text string) {

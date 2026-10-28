@@ -94,14 +94,12 @@ const (
 
 // pageAccents 每一页的语义色 —— 用于顶栏页名色标与底部页签。
 //
-// 顺序与 r.pages 一一对应，五个色相互不相同：
-// 看到青色页签就是概览、橙色是性能、紫色是硬盘、蓝色是网络、黄色是系统。
+// Material You 三页版（2026-10-28）：三页三色互不相同，
+// 看到青色页签就是环境、橙色是详情、淡蓝是系统。
 var pageAccents = []RGBA{
-	P.Mem,     // 概览
-	P.Cpu,     // CPU / 内存
-	P.DiskSSD, // 硬盘
-	P.NetDown, // 网络
-	P.Fan,     // 系统
+	P.Mem, // 环境
+	P.Cpu, // 详情
+	P.Sys, // 系统
 }
 
 // pageAccent 取第 i 页的语义色（越界返回零值，调用方会退化为中性）
@@ -182,13 +180,12 @@ func NewRenderer(mon *monitor.SystemMonitor, fan *hardware.FanController, br *ha
 	r.Ctx.Fan = fan
 	r.Ctx.Bright = br
 
-	// 页面顺序（洋哥指定）：概览 → CPU/内存 → 硬盘 → 网络 → 系统
+	// 页面顺序（Material You 三页版，2026-10-28 洋哥拍板）：环境 → 详情 → 系统。
+	// 旧五页（概览/CPU内存/硬盘/网络/系统）已被 pages_m3.go 的三页取代。
 	r.pages = []Page{
-		NewOverviewPage(mon),
-		NewPerfPage(mon),
-		NewDiskPage(mon),
-		NewNetworkPage(mon),
-		NewSystemPage(mon, fan, br, webToken),
+		NewEnvPage(mon),
+		NewDetailPage(mon),
+		NewSysPage(mon, br),
 	}
 
 	r.rebuildBackground()
@@ -432,22 +429,48 @@ func (r *Renderer) Render(d *DrawCtx) {
 	c.ClearClip()
 
 	if r.Animating() {
-		DrawTopBarClock(c, r.Fonts, r.theme, d.Now)
-		nameCY := TopBarNameCY(r.Fonts, d.Now)
+		// 动画中任一端是全出血页（环境）时，顶栏区交给页面自身的大时钟
+		// —— 环境页的时钟随页面平移进出，再叠加顶栏小时钟会出重影。
 		e := easeInOutCubic(r.animT)
-		// 页名：旧名先淡出、新名后淡入，且**不重叠** ——
-		// 两个字在同一位置交叉淡化会叠出一团糊影，宁可中间空一下。
-		if e < 0.5 {
-			c.SetGlobalAlpha(1 - e*2)
-			DrawTopBarName(c, r.Fonts, r.theme, nameCY, pageNameOf(r.pages[r.animFrom]),
-				r.pageAccent(r.animFrom))
-		} else {
-			c.SetGlobalAlpha((e - 0.5) * 2)
-			DrawTopBarName(c, r.Fonts, r.theme, nameCY, pageNameOf(r.pages[r.animTo]),
-				r.pageAccent(r.animTo))
+		if !pageFullTop(r.pages[r.animFrom]) && !pageFullTop(r.pages[r.animTo]) {
+			DrawTopBarClock(c, r.Fonts, r.theme, d.Now)
+			nameCY := TopBarNameCY(r.Fonts, d.Now)
+			// 页名：旧名先淡出、新名后淡入，且**不重叠** ——
+			// 两个字在同一位置交叉淡化会叠出一团糊影，宁可中间空一下。
+			if e < 0.5 {
+				c.SetGlobalAlpha(1 - e*2)
+				DrawTopBarName(c, r.Fonts, r.theme, nameCY, pageNameOf(r.pages[r.animFrom]),
+					r.pageAccent(r.animFrom))
+			} else {
+				c.SetGlobalAlpha((e - 0.5) * 2)
+				DrawTopBarName(c, r.Fonts, r.theme, nameCY, pageNameOf(r.pages[r.animTo]),
+					r.pageAccent(r.animTo))
+			}
+			c.SetGlobalAlpha(1)
 		}
-		c.SetGlobalAlpha(1)
 		DrawDotsT(c, pageAccents, r.animFrom, r.animTo, e, 918)
+	} else if pageFullTop(r.pages[r.cur]) {
+		// 全出血页（环境）：顶栏区由页面自身绘制。
+		// 局部重绘时顶栏只有"分钟"会变 —— 拿分钟做判据，
+		// 跨分钟才裁出页面顶部时钟区重画（页内其余卡被 clip 裁掉）。
+		minute := d.Now.Minute()
+		if !local || minute != r.lastClockMin {
+			if local {
+				c.RestoreRegion(0, 0, c.W, envTopH)
+				c.SetClip(0, 0, c.W, envTopH)
+				r.drawPageBody(r.pages[r.cur], d, 1, 0)
+				c.ClearClip()
+				r.uploadRects = append(r.uploadRects, Rect{0, 0, c.W, envTopH})
+			}
+			r.lastClockMin = minute
+		}
+		if !local {
+			acc := pageAccents
+			if len(acc) > len(r.pages) {
+				acc = acc[:len(r.pages)]
+			}
+			DrawDots(c, acc, r.cur, 918)
+		}
 	} else {
 		// 局部重绘时顶栏只有"分钟"会变 —— 秒不变、页名不变、页签不变。
 		// 拿分钟做判据：没跨分钟就整条跳过，跨了才补画那一条。
@@ -636,7 +659,13 @@ func (r *Renderer) drawPageBody(p Page, d *DrawCtx, alpha float64, dx int) {
 	c := r.Canvas
 	c.SetGlobalAlpha(alpha)
 	c.SetOffset(dx, 0)
-	c.SetClip(0, clipTop, c.W, clipBot-clipTop)
+	// 全出血页（环境）的时钟从 y=6 画起，clip 顶必须放开到 0 ——
+	// 否则 96px 大时钟只剩 clipTop(96) 以下的底部残迹（实锤于 2026-10-28 抓屏）。
+	top := clipTop
+	if pageFullTop(p) {
+		top = 0
+	}
+	c.SetClip(0, top, c.W, clipBot-top)
 	p.Draw(c, d)
 	c.SetGlobalAlpha(1)
 	c.SetOffset(0, 0)
