@@ -59,7 +59,16 @@ cd r1-frontscreen
 sudo ./install.sh
 ```
 
-脚本自动完成：系统依赖安装（SDL2、smartmontools 等）、编译、配置文件生成、systemd 服务注册。
+脚本自动完成：系统依赖安装（SDL2、smartmontools 等）、编译、配置文件生成、systemd 服务注册（`Type=notify` + `WatchdogSec=30` 看门狗：主循环卡死 30 秒内自动重启，不再出现「进程活着但画面定格」）。
+
+> 旧版升级：如果设备上已有 `Type=simple` 的旧单元，补一个 drop-in 即可启用看门狗：
+>
+> ```bash
+> sudo mkdir -p /etc/systemd/system/r1-toolbox.service.d
+> printf '[Service]\nType=notify\nWatchdogSec=30\n' | \
+>   sudo tee /etc/systemd/system/r1-toolbox.service.d/override.conf
+> sudo systemctl daemon-reload && sudo systemctl restart r1-toolbox
+> ```
 
 > 说明：仓库改名为 **R1 FrontScreen**，但服务名、二进制名、配置路径沿用上游的 `r1-toolbox`（`systemd` 单元 / `/usr/local/bin/r1-toolbox` / `/etc/r1-toolbox/`），从上游或旧版升级无需任何迁移。
 

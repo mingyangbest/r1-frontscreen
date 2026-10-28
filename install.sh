@@ -177,9 +177,23 @@ sudo tee /etc/systemd/system/r1-toolbox.service > /dev/null <<EOF
 Description=R1 Toolbox Display Service
 After=network.target
 
+# 🔴 禁用启动限流：7x24 无人值守的常亮屏，一次 DRM 争用不该让屏幕永远黑着。
+# 配合 Restart=always + RestartSec=5，开机早期 DRM 未就绪也能几轮内自己起来。
+StartLimitIntervalSec=0
+
 [Service]
-Type=simple
+# Type=notify + WatchdogSec：应用通过 sd_notify 上报就绪与心跳
+# （internal/watchdog）。主循环卡死（屏幕定格但进程活着）30s 内被
+# systemd 识别并重启 —— 进程崩溃 Restart 本来就能救，卡死只有看门狗能救。
+Type=notify
+WatchdogSec=30
+NotifyAccess=main
 User=root
+Environment=SDL_VIDEODRIVER=kmsdrm
+Environment=SDL_FBDEV=/dev/fb0
+Environment=XDG_RUNTIME_DIR=/run/r1-toolbox
+ExecStartPre=/bin/mkdir -p /run/r1-toolbox
+ExecStartPre=/bin/chmod 700 /run/r1-toolbox
 ExecStart=/usr/local/bin/r1-toolbox
 Restart=always
 RestartSec=5
