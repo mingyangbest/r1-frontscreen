@@ -1,16 +1,38 @@
 # R1 FrontScreen
 
-海康威视 R1 / R1X NAS 前置触摸屏的硬件管理工具：五页信息面板（概览/性能/硬盘/网络/系统）、Web 控制面板、智能风扇调速、天气展示。
+海康威视 R1 / R1X NAS 前置触摸屏的硬件管理工具：Material You 三页信息面板（环境/详情/系统）、Web 控制面板、智能风扇调速、天气展示。
 
 > 本项目基于 [lemon6515/r1-toolbox-go](https://github.com/lemon6515/r1-toolbox-go) 增强 fork 而来，遵循上游 **GPL-3.0 + Commons Clause** 许可证，感谢上游作者的开源工作。
 
 ## 界面预览
 
+### v0.4.0 · Material You 三页版（当前）
+
+| 环境（主屏） | 详情 | 系统 |
+|:---:|:---:|:---:|
+| ![环境](docs/screenshots/env.png) | ![详情](docs/screenshots/detail.png) | ![系统](docs/screenshots/system.png) |
+
+*三页触摸翻页 · 96px 大时钟+天气融合 · 每卡一色的 tonal 配色 · IP 自动打码*
+
+**对比旧版五页（v0.3.0 及以前）的变化**：
+
+| | 旧版五页 | 新版三页 |
+|---|---|---|
+| 页面结构 | 概览/性能/硬盘/网络/系统 | 环境/详情/系统 |
+| 首屏主角 | 46px 顶栏小时钟 + 指标卡 | 96px 大时钟 + 天气融合（环境屏风格） |
+| 负载表达 | 双环仪表 + 每核百分比 | 大数字 + 细进度条 + 每核条 |
+| 配色 | 单强调色 + 语义色描边 | 每卡一个低饱和色相（tonal 卡面） |
+| 上下行速率 | 数字行 | 独立大卡（大数字 + 双曲线 + 今日累计） |
+| 公网 IP | 完整明文 | 应用内自动打码（`112.81•·····`），截图亦打星 |
+
+<details>
+<summary><b>旧版五页界面截图（点击展开）</b></summary>
+
 | 概览 | CPU / 内存 | 硬盘 | 网络 | 系统 |
 |:---:|:---:|:---:|:---:|:---:|
-| ![概览](docs/screenshots/overview.png) | ![CPU内存](docs/screenshots/performance.png) | ![硬盘](docs/screenshots/disk.png) | ![网络](docs/screenshots/network.png) | ![系统](docs/screenshots/system.png) |
+| ![概览](docs/screenshots/legacy/overview.png) | ![CPU内存](docs/screenshots/legacy/performance.png) | ![硬盘](docs/screenshots/legacy/disk.png) | ![网络](docs/screenshots/legacy/network.png) | ![系统](docs/screenshots/legacy/system.png) |
 
-*五页触摸翻页 · 语义配色 · 天气实况 · 全部数据可在系统内对账*
+</details>
 
 ## 本 fork 的主要改进
 
@@ -75,7 +97,7 @@ docker compose up -d screen   # privileged + /dev/fb0 + host 网络
 
 启动后浏览器访问 `http://<设备IP>:8080`。所有控制接口需要令牌：
 
-- 首次启动自动生成 8 位令牌，打印在启动日志中（`journalctl -u r1-toolbox | grep 令牌`），同时显示在屏幕「系统」页底部
+- 首次启动自动生成 8 位令牌，打印在启动日志中（`journalctl -u r1-toolbox | grep 令牌`）
 - 浏览器首次访问时按提示输入一次即可（自动记住）
 
 ## 配置
