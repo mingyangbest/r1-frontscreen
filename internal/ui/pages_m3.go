@@ -11,6 +11,15 @@ package ui
 //   4. bar 颜色跟随所在卡的色相，≥90% 才变红（效果稿右侧注释原文）
 //   5. 背景压到近纯黑（themeInk 同步调整），把彩色容器衬出来
 //
+//  排版纪律（2026-10-28 三轮抓屏 + 像素扫描实测，必须遵守）：
+//   - m3Card 标题 y+38 → 墨迹约 [y+43, y+63]；**内容首行墨迹必须 ≥ y+66**
+//   - 锚定：DrawTextL / DrawTextLR / DrawTextC 的 y 是**位图顶**（含 ascent
+//     空隙 ≈0.25×字号）；DrawTextMixL 的 y 是**行盒顶**（墨迹 ≈ y+4~y+21 @FzSmall）；
+//     DrawPartsL 的 y 是**基线**（latin 数字墨迹 ≈ [y-28, y] @40px）；
+//     DrawTextMixRC / DrawRateRow / m3Note 的 y 是**墨迹垂直中心**
+//   - 文字与 bar / 曲线等几何元素间 ≥5px；文字与文字间 ≥7px；
+//     任何墨迹距卡底 ≥8px；同卡行距用墨迹底到下一墨迹顶核算
+//
 //  其余约定不变：满版排版、公网 IP 打码、读不到显示 — 绝不编造。
 //  三页：环境（fullTop 大时钟） → 详情 → 系统
 // ============================================================
@@ -41,7 +50,7 @@ func fmtMBps(v float64) string {
 // ------------------------------------------------------------
 
 const m3Rad = 26
-const m3Num = 48 // 卡内大数字
+const m3Num = 48 // 卡内大数字（独立卡用；104 宽小卡用 FzLarge 混排防溢出）
 
 type m3Hue struct{ bg, hi RGBA }
 
@@ -61,13 +70,14 @@ func m3Bar(hue m3Hue, v, pctDanger float64, danger RGBA) RGBA {
 	return hue.hi
 }
 
-// m3Card 实色容器卡 + 色相标题（三页版标准卡头）
+// m3Card 实色容器卡 + 色相标题（三页版标准卡头）。
+// 标题墨迹区 [y+43, y+63]，内容行从 y+64 之后排。
 func m3Card(c *Canvas, fs *FontSet, x, y, w, h int, hue m3Hue, title string) {
 	c.FillRoundRect(x, y, w, h, m3Rad, hue.bg)
-	DrawTextMixL(c, fs, x+24, y+42, FzBody, hue.hi, title)
+	DrawTextMixL(c, fs, x+24, y+38, FzBody, hue.hi, title)
 }
 
-// m3Note 卡头右侧的小注（FzTiny，弱化灰）
+// m3Note 卡头右侧的小注（FzTiny，弱化灰）。y 是**墨迹垂直中心**。
 func m3Note(c *Canvas, fs *FontSet, xRight, y int, th *Theme, text string) {
 	DrawTextMixRC(c, fs, xRight, y, FzTiny, th.Dim, text)
 }
@@ -96,10 +106,6 @@ func (p *EnvPage) FullTop() bool    { return true }
 
 // 首页纵向布局。时钟区加高到 184（FzMega 112 的字号空间），
 // 卡间距 14px，满版不留大片空白。
-// 锚定纪律（实机踩坑结论，2026-10-28）：
-//   DrawTextL / DrawTextMixL / DrawTextLR / DrawTextMixRC —— y 是**行盒顶**
-//   DrawPartsL —— y 是**基线**（40px 数字 ink 顶 ≈ y-32）
-// 排版时两者不可混用同一 y 值，否则文字与进度条互相穿插。
 const (
 	envTopH   = 184
 	envCardsY = 200
@@ -160,10 +166,12 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 	}
 
 	// ---------------- 三张指标小卡（CPU 蓝 / 内存 紫 / 温度 琥珀）----------------
+	// 104px 窄卡：数字用「40px 数字 + 20px 单位」基线混排，48px 的 "43%" 会顶出卡边。
 	if c.ClipVisible(PadX, envCardsY, CardW, envCardsH) {
 		type mini struct {
 			label string
 			txt   string
+			unit  string
 			v     float64
 			hue   m3Hue
 		}
@@ -171,15 +179,19 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 		mem := clamp(d.Ease("env.mem", m.MemPercent), 0, 100)
 		temp := clamp(d.Ease("env.temp", m.CPUTemp), 0, 120)
 		cards := []mini{
-			{"CPU", fmt.Sprintf("%.0f%%", cpu), cpu, hueBlue},
-			{"内存", fmt.Sprintf("%.0f%%", mem), mem, huePurple},
-			{"温度", fmt.Sprintf("%.0f°", temp), temp, hueAmber},
+			{"CPU", fmt.Sprintf("%.0f", cpu), "%", cpu, hueBlue},
+			{"内存", fmt.Sprintf("%.0f", mem), "%", mem, huePurple},
+			{"温度", fmt.Sprintf("%.0f", temp), "°", temp, hueAmber},
 		}
 		for i, mc := range cards {
 			cx := PadX + i*(104+12)
 			c.FillRoundRect(cx, envCardsY, 104, envCardsH, m3Rad, mc.hue.bg)
-			DrawTextMixL(c, fs, cx+18, envCardsY+42, FzBody, mc.hue.hi, mc.label)
-			DrawTextL(c, fs, mc.txt, cx+18, envCardsY+70, m3Num, th.Text)
+			DrawTextMixL(c, fs, cx+18, envCardsY+38, FzBody, mc.hue.hi, mc.label)
+			// DrawPartsL 基线锚：数字墨迹 [y+86, y+114]，标签墨迹 [y+43, y+63]
+			DrawPartsL(c, fs, cx+18, envCardsY+114, FzLarge, []TPart{
+				{S: mc.txt, Col: th.Text, Latin: true},
+				{S: mc.unit, Col: th.Dim, Latin: true, Size: FzSmall},
+			})
 			c.Bar(cx+18, envCardsY+126, 68, 8, 4, clamp(mc.v, 0, 100)/100,
 				th.Track, m3Bar(mc.hue, mc.v, 90, th.Danger))
 		}
@@ -188,7 +200,7 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 	// ---------------- CPU 负载（每核迷你条，单行）----------------
 	if c.ClipVisible(PadX, envCoresY, CardW, envCoresH) {
 		m3Card(c, fs, PadX, envCoresY, CardW, envCoresH, hueTeal, "CPU 负载")
-		m3Note(c, fs, PadX+CardW-24, envCoresY+40, th,
+		m3Note(c, fs, PadX+CardW-24, envCoresY+48, th,
 			fmt.Sprintf("负载 %.2f", m.LoadAvg[0]))
 
 		cores := m.CPUCores
@@ -199,12 +211,13 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 		cellW := 74
 		for i := 0; i < n; i++ {
 			cx := PadX + 24 + i*cellW
-			DrawTextL(c, fs, fmt.Sprintf("C%d", i), cx, envCoresY+68, FzTiny, th.Dim)
+			// DrawTextL 位图顶锚：FzTiny 墨迹 ≈ [y+66, y+78]
+			DrawTextL(c, fs, fmt.Sprintf("C%d", i), cx, envCoresY+62, FzTiny, th.Sub)
 			v := 0.0
 			if i < len(cores) {
 				v = clamp(cores[i], 0, 100)
 			}
-			c.Bar(cx, envCoresY+90, 62, 6, 3, v/100,
+			c.Bar(cx, envCoresY+84, 62, 6, 3, v/100,
 				th.Track, m3Bar(hueTeal, v, 90, th.Danger))
 		}
 	}
@@ -214,8 +227,9 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 		m3Card(c, fs, PadX, envNetY, CardW, envNetH, hueGreen, "网络")
 		up := d.Ease("env.up", m.NetSendMBps)
 		dn := d.Ease("env.dn", m.NetRecvMBps)
-		DrawRateRow(c, fs, th, PadX+CardW-24, envNetY+44, up, P.NetUp, true)
-		DrawRateRow(c, fs, th, PadX+CardW-24, envNetY+74, dn, P.NetDown, false)
+		// DrawRateRow 的 cy 是数字墨迹垂直中心：行1 墨迹 [y+38, y+58]，行2 [y+70, y+90]
+		DrawRateRow(c, fs, th, PadX+CardW-24, envNetY+48, up, P.NetUp, true)
+		DrawRateRow(c, fs, th, PadX+CardW-24, envNetY+80, dn, P.NetDown, false)
 
 		send := make([]float64, 0, len(m.NetHistory))
 		recv := make([]float64, 0, len(m.NetHistory))
@@ -231,8 +245,8 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 			}
 		}
 		scale *= 1.15
-		c.Curve(PadX+24, envNetY+92, CardW-48, 58, recv, scale, 60, P.NetDown, 2, 0.26)
-		c.Curve(PadX+24, envNetY+92, CardW-48, 58, send, scale, 60, P.NetUp, 2, 0)
+		c.Curve(PadX+24, envNetY+94, CardW-48, 52, recv, scale, 60, P.NetDown, 2, 0.26)
+		c.Curve(PadX+24, envNetY+94, CardW-48, 52, send, scale, 60, P.NetUp, 2, 0)
 	}
 
 	// ---------------- 存储（容量最大的卷）----------------
@@ -250,14 +264,15 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 				}
 			}
 			if big.Temp > 0 {
-				DrawTextLR(c, fs, fmt.Sprintf("%.0f°C", big.Temp),
-					PadX+CardW-24, envDiskY+40, FzTiny, th.Dim)
+				m3Note(c, fs, PadX+CardW-24, envDiskY+48, th,
+					fmt.Sprintf("%.0f°C", big.Temp))
 			}
-			DrawTextMixL(c, fs, PadX+24, envDiskY+74, FzSmall, th.Text,
+			// 卷名墨迹 [y+72, y+89] / bar [y+94, y+102] / 容量行墨迹 [y+109, y+124]
+			DrawTextMixL(c, fs, PadX+24, envDiskY+68, FzSmall, th.Text,
 				trim(big.VolName, 8))
-			c.Bar(PadX+24, envDiskY+100, CardW-48, 8, 4, big.UsedPercent/100,
+			c.Bar(PadX+24, envDiskY+94, CardW-48, 8, 4, big.UsedPercent/100,
 				th.Track, m3Bar(huePurple, big.UsedPercent, 90, th.Danger))
-			DrawTextMixL(c, fs, PadX+24, envDiskY+112, FzTiny, th.Dim,
+			DrawTextMixL(c, fs, PadX+24, envDiskY+106, FzTiny, th.Dim,
 				fmt.Sprintf("%.0f GB / %.0f GB · %.0f%%",
 					big.UsedGB, big.TotalGB, big.UsedPercent))
 		}
@@ -306,10 +321,10 @@ func NewDetailPage(mon *monitor.SystemMonitor) *DetailPage {
 func (p *DetailPage) PageName() string { return "详情" }
 
 const (
-	dtCpuY, dtCpuH   = 104, 172
-	dtMemY, dtMemH   = 292, 156
-	dtDiskY, dtDiskH = 464, 180
-	dtTempY, dtTempH = 660, 176
+	dtCpuY, dtCpuH   = 104, 176
+	dtMemY, dtMemH   = 296, 152
+	dtDiskY, dtDiskH = 464, 188
+	dtTempY, dtTempH = 668, 180
 )
 
 func (p *DetailPage) DataRects(d *DrawCtx) []Rect {
@@ -334,16 +349,16 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 				peak = v
 			}
 		}
-		m3Note(c, fs, PadX+CardW-24, dtCpuY+40, th,
+		m3Note(c, fs, PadX+CardW-24, dtCpuY+48, th,
 			fmt.Sprintf("峰值 %.0f%%", peak))
 		// 曲线区淡网格（对照效果稿的水平细线）
-		for _, gy := range []int{22, 46, 70} {
-			DrawHairline(c, th, PadX+24, dtCpuY+56+gy, CardW-48)
+		for _, gy := range []int{16, 42, 68} {
+			DrawHairline(c, th, PadX+24, dtCpuY+58+gy, CardW-48)
 		}
-		c.Curve(PadX+24, dtCpuY+56, CardW-48, 88, m.CPUHistory,
+		c.Curve(PadX+24, dtCpuY+58, CardW-48, 84, m.CPUHistory,
 			autoTop(m.CPUHistory, 20), 60, hueBlue.hi, 2, 0.20)
-		// DrawPartsL 的 y 是基线：40px 数字的 ink 顶 ≈ y-32，别压住曲线
-		DrawPartsL(c, fs, PadX+24, dtCpuY+166, FzSmall, []TPart{
+		// DrawPartsL 基线锚：墨迹 [y+150, y+164]，曲线底 y+142
+		DrawPartsL(c, fs, PadX+24, dtCpuY+164, FzSmall, []TPart{
 			{S: "当前 ", Col: th.Dim},
 			{S: fmt.Sprintf("%.0f%%", m.CPUPercent), Col: th.Sub, Latin: true},
 		})
@@ -352,17 +367,19 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 	// ---------------- 内存（绝对量 + 缓存/Swap，紫卡）----------------
 	if c.ClipVisible(PadX, dtMemY, CardW, dtMemH) {
 		m3Card(c, fs, PadX, dtMemY, CardW, dtMemH, huePurple, "内存")
-		m3Note(c, fs, PadX+CardW-24, dtMemY+40, th,
+		m3Note(c, fs, PadX+CardW-24, dtMemY+48, th,
 			fmt.Sprintf("%.0f%%", m.MemPercent))
-		DrawPartsL(c, fs, PadX+24, dtMemY+114, FzLarge, []TPart{
+		// 大数字墨迹 [y+76, y+104]
+		DrawPartsL(c, fs, PadX+24, dtMemY+104, FzLarge, []TPart{
 			{S: fmt.Sprintf("%.1f", m.MemUsedGB), Col: th.Text, Latin: true},
 			{S: " GB", Col: th.Dim, Latin: true},
 			{S: "  /  ", Col: th.Faint, Latin: true},
 			{S: fmt.Sprintf("%.0f GB", m.MemTotalGB), Col: th.Sub, Latin: true},
 		})
-		c.Bar(PadX+24, dtMemY+126, CardW-48, 8, 4, m.MemPercent/100,
+		c.Bar(PadX+24, dtMemY+112, CardW-48, 8, 4, m.MemPercent/100,
 			th.Track, m3Bar(huePurple, m.MemPercent, 90, th.Danger))
-		DrawTextMixL(c, fs, PadX+24, dtMemY+132, FzTiny, th.Dim,
+		// 缓存行墨迹 [y+127, y+142]，bar 底 y+120，卡底 y+152
+		DrawTextMixL(c, fs, PadX+24, dtMemY+124, FzTiny, th.Dim,
 			fmt.Sprintf("缓存 %.1f GB · Swap %.1f / %.0f GB",
 				m.MemCacheGB, m.SwapUsedGB, m.SwapTotalGB))
 	}
@@ -372,19 +389,20 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 		m3Card(c, fs, PadX, dtDiskY, CardW, dtDiskH, hueGreen, "磁盘")
 		vols := m.Disk.GetVolumes()
 		if len(vols) == 0 {
-			DrawText(c, fs, "未检测到存储卷", PadX+24, dtDiskY+82, FzSmall, th.Dim)
+			DrawText(c, fs, "未检测到存储卷", PadX+24, dtDiskY+72, FzSmall, th.Dim)
 		} else {
+			// 每组 38px：卷名行盒 [vy, vy+26]（墨迹 +4~+21）、bar [vy+28, vy+34]
 			for i, v := range vols {
 				if i >= 3 {
 					break
 				}
-				vy := dtDiskY + 72 + i*36
+				vy := dtDiskY + 64 + i*38
 				DrawTextMixL(c, fs, PadX+24, vy, FzSmall, th.Text, trim(v.VolName, 8))
 				if v.Temp > 0 {
 					DrawTextLR(c, fs, fmt.Sprintf("%.0f°C", v.Temp),
-						PadX+CardW-24, vy, FzTiny, th.Dim)
+						PadX+CardW-24, vy+2, FzTiny, th.Dim)
 				}
-				c.Bar(PadX+24, vy+26, CardW-48, 6, 3, v.UsedPercent/100,
+				c.Bar(PadX+24, vy+28, CardW-48, 6, 3, v.UsedPercent/100,
 					th.Track, m3Bar(hueGreen, v.UsedPercent, 90, th.Danger))
 			}
 		}
@@ -395,27 +413,33 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 		m3Card(c, fs, PadX, dtTempY, CardW, dtTempH, hueAmber, "温度与风扇")
 		cpuT := clamp(d.Ease("dt.ct", m.CPUTemp), 0, 120)
 		diskT := clamp(d.Ease("dt.dt", m.Disk.MaxDiskTemp()), 0, 120)
-		DrawPartsL(c, fs, PadX+24, dtTempY+114, FzLarge, []TPart{
+		// 大数字与标签**同基线**：数字墨迹 [y+72, y+100]，标签墨迹 [y+86, y+100]
+		DrawPartsL(c, fs, PadX+24, dtTempY+100, FzLarge, []TPart{
 			{S: fmt.Sprintf("%.0f°", cpuT), Col: th.Text, Latin: true},
 		})
-		DrawTextMixL(c, fs, PadX+110, dtTempY+110, FzSmall, th.Dim, "CPU")
-		DrawPartsL(c, fs, PadX+190, dtTempY+114, FzLarge, []TPart{
+		DrawPartsL(c, fs, PadX+110, dtTempY+100, FzSmall, []TPart{
+			{S: "CPU", Col: th.Dim, Latin: true},
+		})
+		DrawPartsL(c, fs, PadX+190, dtTempY+100, FzLarge, []TPart{
 			{S: fmt.Sprintf("%.0f°", diskT), Col: th.Text, Latin: true},
 		})
-		DrawTextMixL(c, fs, PadX+272, dtTempY+110, FzSmall, th.Dim, "硬盘")
-		c.Bar(PadX+24, dtTempY+134, 100, 8, 4, clamp(cpuT, 0, 100)/100,
+		DrawPartsL(c, fs, PadX+272, dtTempY+100, FzSmall, []TPart{
+			{S: "硬盘", Col: th.Dim},
+		})
+		c.Bar(PadX+24, dtTempY+112, 100, 8, 4, clamp(cpuT, 0, 100)/100,
 			th.Track, m3Bar(hueAmber, cpuT, 82, th.Danger))
-		c.Bar(PadX+190, dtTempY+134, 100, 8, 4, clamp(diskT, 0, 100)/100,
+		c.Bar(PadX+190, dtTempY+112, 100, 8, 4, clamp(diskT, 0, 100)/100,
 			th.Track, m3Bar(hueAmber, diskT, 82, th.Danger))
 
+		// 风扇行墨迹 [y+139, y+154]，bar 底 y+120，卡底 y+180
 		cpuRPM, boxRPM := p.fanSpeeds(d)
-		DrawTextMixL(c, fs, PadX+24, dtTempY+152, FzTiny, th.Dim,
-			fmt.Sprintf("CPU %s · 机箱 %s（%s）",
+		DrawTextMixL(c, fs, PadX+24, dtTempY+136, FzTiny, th.Dim,
+			fmt.Sprintf("CPU %s · 机箱 %s RPM（%s）",
 				cpuRPM, boxRPM, fanModeCN(d.Fan.GetCPUMode())))
 	}
 }
 
-// fanSpeeds 风扇转速文本（0 视为读不到 → —）
+// fanSpeeds 风扇转速文本（纯数字；0 视为读不到 → —；单位由调用行统一给出）
 func (p *DetailPage) fanSpeeds(d *DrawCtx) (string, string) {
 	cpuRPM, boxRPM := 0, 0
 	if d.Fan != nil {
@@ -425,7 +449,7 @@ func (p *DetailPage) fanSpeeds(d *DrawCtx) (string, string) {
 		if v <= 0 {
 			return "—"
 		}
-		return fmt.Sprintf("%d RPM", v)
+		return fmt.Sprintf("%d", v)
 	}
 	return f(cpuRPM), f(boxRPM)
 }
@@ -460,11 +484,11 @@ func NewSysPage(mon *monitor.SystemMonitor, br *hardware.BrightnessController) *
 func (p *SysPage) PageName() string { return "系统" }
 
 const (
-	syDevY, syDevH   = 104, 140
-	syNetY, syNetH   = 260, 132
-	sySpdY, sySpdH   = 408, 200
-	syCtrlY, syCtrlH = 624, 164
-	syPillY          = 804
+	syDevY, syDevH   = 104, 144
+	syNetY, syNetH   = 264, 128
+	sySpdY, sySpdH   = 408, 204
+	syCtrlY, syCtrlH = 628, 176
+	syPillY          = 822
 )
 
 func (p *SysPage) DataRects(d *DrawCtx) []Rect {
@@ -484,8 +508,10 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 	// ---------------- 设备（蓝卡）----------------
 	if c.ClipVisible(PadX, syDevY, CardW, syDevH) {
 		m3Card(c, fs, PadX, syDevY, CardW, syDevH, hueBlue, "设备")
-		DrawTextLR(c, fs, appVersion, PadX+CardW-24, syDevY+38, FzTiny, th.Dim)
-		DrawTextMixL(c, fs, PadX+24, syDevY+66, FzLarge, th.Text, trim(d.Host, 14))
+		m3Note(c, fs, PadX+CardW-24, syDevY+48, th, appVersion)
+		// 主机名 FzLarge 墨迹 [y+74, y+102]
+		DrawTextMixL(c, fs, PadX+24, syDevY+64, FzLarge, th.Text, trim(d.Host, 14))
+		// 副标题墨迹 [y+116, y+133]，卡底 y+144
 		DrawTextMixL(c, fs, PadX+24, syDevY+112, FzSmall, th.Dim,
 			fmt.Sprintf("飞牛 fnOS · %d 核 · %.0f GB 内存",
 				coreCount(m), m.MemTotalGB))
@@ -498,7 +524,8 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 		if iface == "" {
 			iface = "—"
 		}
-		DrawPartsL(c, fs, PadX+24, syNetY+100, FzSmall, []TPart{
+		// 两行 DrawPartsL 基线锚：行1 墨迹 [y+74, y+88]，行2 [y+102, y+116]
+		DrawPartsL(c, fs, PadX+24, syNetY+88, FzSmall, []TPart{
 			{S: "局域网 " + iface + "  ", Col: th.Sub},
 			{S: ipOrDash(m.LocalIP), Col: th.Text, Latin: true},
 		})
@@ -508,7 +535,7 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 				pub = maskPubIP(pi.IP)
 			}
 		}
-		DrawPartsL(c, fs, PadX+24, syNetY+128, FzSmall, []TPart{
+		DrawPartsL(c, fs, PadX+24, syNetY+116, FzSmall, []TPart{
 			{S: "公网  ", Col: th.Sub},
 			{S: pub, Col: th.Text, Latin: true},
 		})
@@ -520,12 +547,16 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 		up := clamp(d.Ease("sy.up", m.NetSendMBps), 0, 1e9)
 		dn := clamp(d.Ease("sy.dn", m.NetRecvMBps), 0, 1e9)
 
+		// 两行结构防撞车：「标签行」+「数字行」（左右两组各占半卡 160px，
+		// 40px 数字 + MB/s 单位 ≈133px 刚好放下；上一版同基线混排宽 ~177px
+		// 与右列起点 190 相撞，实锤于 2026-10-28 抓屏）。
+		// 标签墨迹 [y+70, y+85]，数字墨迹 [y+90, y+118]
 		DrawTextMixL(c, fs, PadX+24, sySpdY+66, FzTiny, th.Dim, "上传 · MB/s")
-		DrawPartsL(c, fs, PadX+24, sySpdY+122, FzLarge, []TPart{
+		DrawPartsL(c, fs, PadX+24, sySpdY+118, FzLarge, []TPart{
 			{S: fmtMBps(up), Col: th.Text, Latin: true},
 		})
-		DrawTextMixL(c, fs, PadX+190, sySpdY+66, FzTiny, th.Dim, "下载 · MB/s")
-		DrawPartsL(c, fs, PadX+190, sySpdY+122, FzLarge, []TPart{
+		DrawTextMixL(c, fs, PadX+192, sySpdY+66, FzTiny, th.Dim, "下载 · MB/s")
+		DrawPartsL(c, fs, PadX+192, sySpdY+118, FzLarge, []TPart{
 			{S: fmtMBps(dn), Col: th.Text, Latin: true},
 		})
 
@@ -543,10 +574,11 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 			}
 		}
 		scale *= 1.15
-		c.Curve(PadX+24, sySpdY+134, CardW-48, 38, recv, scale, 60, P.NetDown, 2, 0.26)
-		c.Curve(PadX+24, sySpdY+134, CardW-48, 38, send, scale, 60, P.NetUp, 2, 0)
+		c.Curve(PadX+24, sySpdY+132, CardW-48, 40, recv, scale, 60, P.NetDown, 2, 0.26)
+		c.Curve(PadX+24, sySpdY+132, CardW-48, 40, send, scale, 60, P.NetUp, 2, 0)
 
-		DrawPartsL(c, fs, PadX+24, sySpdY+194, FzSmall, []TPart{
+		// 今日行墨迹 [y+182, y+196]，曲线底 y+172，卡底 y+204
+		DrawPartsL(c, fs, PadX+24, sySpdY+196, FzSmall, []TPart{
 			{S: "今日收 " + fmtBytes(m.NetRxToday), Col: th.Sub},
 			{S: "  ·  ", Col: th.Faint},
 			{S: "发 " + fmtBytes(m.NetTxToday), Col: th.Sub},
@@ -561,18 +593,21 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 		if err == nil && p.br.Max() > 0 {
 			pct = float64(cur) / float64(p.br.Max())
 		}
-		DrawTextMixL(c, fs, PadX+24, syCtrlY+66, FzSmall, th.Text, "亮度")
+		// 亮度行：文字墨迹 [y+74, y+91]，滑条 y+74（中心 y+78 与文字墨迹中心对齐）
+		DrawTextMixL(c, fs, PadX+24, syCtrlY+70, FzSmall, th.Text, "亮度")
 		sliderX, sliderW := PadX+92, 158
-		c.Bar(sliderX, syCtrlY+70, sliderW, 8, 4, pct, th.Track, huePurple.hi)
-		c.FillCircle(float64(sliderX+int(float64(sliderW)*pct)), syCtrlY+74, 7, th.Text)
+		c.Bar(sliderX, syCtrlY+74, sliderW, 8, 4, pct, th.Track, huePurple.hi)
+		c.FillCircle(float64(sliderX+int(float64(sliderW)*pct)), syCtrlY+78, 7, th.Text)
 		DrawTextLR(c, fs, fmt.Sprintf("%.0f%%", pct*100),
-			PadX+CardW-24, syCtrlY+66, FzSmall, th.Text)
-		DrawTextMixL(c, fs, PadX+24, syCtrlY+94, FzTiny, th.Dim,
+			PadX+CardW-24, syCtrlY+70, FzSmall, th.Text)
+		// 提示行墨迹 [y+99, y+114]
+		DrawTextMixL(c, fs, PadX+24, syCtrlY+96, FzTiny, th.Dim,
 			"点左半降低 · 右半升高")
 
 		// 关屏按钮（保留 v0.1.0 以来的一键关屏能力）
-		c.FillRoundRect(PadX+24, syCtrlY+110, CardW-48, 42, 21, WithA(th.Danger, 40))
-		DrawTextC(c, fs, "关闭屏幕", PadX+24+(CardW-48)/2, syCtrlY+132, FzSmall, Lit(th.Danger, 0.25))
+		c.FillRoundRect(PadX+24, syCtrlY+118, CardW-48, 44, 22, WithA(th.Danger, 40))
+		// DrawTextC 位图顶锚：FzSmall 墨迹 ≈ [y+130, y+144]，按钮中心 y+140
+		DrawTextC(c, fs, "关闭屏幕", PadX+24+(CardW-48)/2, syCtrlY+126, FzSmall, Lit(th.Danger, 0.25))
 	}
 
 	// ---------------- 服务状态 pill ----------------
@@ -587,14 +622,14 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 // Tap 触屏：亮度滑条左半 -10% / 右半 +10%；关屏按钮触发 OnScreenOff。
 func (p *SysPage) Tap(x, y int, d *DrawCtx) {
 	// 关屏按钮（先判：按钮在下方，与亮度行不重叠）
-	if x >= PadX+24 && x <= PadX+CardW-24 && y >= syCtrlY+112 && y <= syCtrlY+154 {
+	if x >= PadX+24 && x <= PadX+CardW-24 && y >= syCtrlY+118 && y <= syCtrlY+162 {
 		if d.OnScreenOff != nil {
 			d.OnScreenOff()
 		}
 		return
 	}
 	// 亮度行
-	if y >= syCtrlY+58 && y <= syCtrlY+94 && x >= PadX && x <= PadX+CardW {
+	if y >= syCtrlY+62 && y <= syCtrlY+100 && x >= PadX && x <= PadX+CardW {
 		if p.br == nil {
 			return
 		}
