@@ -97,9 +97,10 @@ const (
 )
 
 // m3Card 容器卡 + 标题（FzSmall + 1px 字距，基线 y+m3TitleBase）
-func m3Card(c *Canvas, fs *FontSet, x, y, w, h int, hue m3Hue, title string) {
+// 返回标题墨迹宽度，方便需要紧跟标题追加小字时不用再猜坐标。
+func m3Card(c *Canvas, fs *FontSet, x, y, w, h int, hue m3Hue, title string) int {
 	c.FillRoundRect(x, y, w, h, m3Rad, hue.bg)
-	drawTracked(c, fs, title, x+m3Pad, y+m3TitleBase, FzSmall, hue.hi, 1)
+	return drawTracked(c, fs, title, x+m3Pad, y+m3TitleBase, FzSmall, hue.hi, 1)
 }
 
 // m3Note 卡头右侧小注：**与标题同基线**右对齐（之前用中心锚，且比标题低 8px，
@@ -415,7 +416,13 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 
 	// ---------------- 内存（绝对量 + 缓存/Swap，紫卡）----------------
 	if c.ClipVisible(PadX, dtMemY, CardW, dtMemH) {
-		m3Card(c, fs, PadX, dtMemY, CardW, dtMemH, huePurple, "内存")
+		tw := m3Card(c, fs, PadX, dtMemY, CardW, dtMemH, huePurple, "内存")
+		// 标题后紧跟物理容量：16 GB 的机器内核只报 15.4 GiB（核显/固件预留），
+		// 两个数字都摆出来，才不会让人以为内存"缩水"了
+		if m.MemPhysGB > 0 {
+			DrawPartsL(c, fs, PadX+m3Pad+tw+10, dtMemY+m3TitleBase, FzTiny,
+				splitParts(fmt.Sprintf("物理 %.0f GB", m.MemPhysGB), th.Dim))
+		}
 		m3Note(c, fs, PadX+CardW-m3Pad, dtMemY+m3TitleBase, th,
 			fmt.Sprintf("%.0f%%", m.MemPercent))
 		// 大数字基线 +89（墨迹 [56,89]）；单位降两档并用 Gap 顶住，不留大空格
@@ -423,7 +430,7 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 			{S: fmt.Sprintf("%.1f", m.MemUsedGB), Col: th.Text, Latin: true},
 			{S: "GB", Col: th.Sub, Latin: true, Size: FzSmall, Gap: 4},
 			{S: "/", Col: th.Dim, Latin: true, Size: FzBody, Gap: 10},
-			{S: fmt.Sprintf("%.0f", m.MemTotalGB), Col: th.Sub, Latin: true, Gap: 10},
+			{S: fmt.Sprintf("%.1f", m.MemTotalGB), Col: th.Sub, Latin: true, Gap: 10},
 			{S: "GB", Col: th.Dim, Latin: true, Size: FzSmall, Gap: 4},
 		})
 		// bar 顶 +101（数字墨迹底 +89 之下 12），底 +107
@@ -577,10 +584,17 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 		DrawPartsL(c, fs, PadX+m3Pad, syDevY+85, FzLarge,
 			splitParts(trim(d.Host, 14), th.Text))
 		// 副标题墨迹顶 +105（主机名墨迹底 +85 之下 20）→ 基线 +122，卡底 +140 → 18
+		//
+		// 这里是**规格卡**，内存写物理安装容量（SMBIOS），和商品页 16 GB 一致；
+		// 运行态「已用 / 内核可见总量」放在详情页内存卡（15.4 GB），两边不混。
+		memTxt := fmt.Sprintf("%.1f GB", m.MemTotalGB)
+		if m.MemPhysGB > 0 {
+			memTxt = fmt.Sprintf("%.0f GB", m.MemPhysGB)
+		}
 		DrawPartsL(c, fs, PadX+m3Pad, syDevY+122, FzSmall, []TPart{
 			{S: "飞牛 fnOS", Col: th.Dim},
 			{S: fmt.Sprintf("%d 核", coreCount(m)), Col: th.Dim, Gap: 9},
-			{S: fmt.Sprintf("%.0f GB", m.MemTotalGB), Col: th.Dim, Latin: true, Gap: 9},
+			{S: memTxt, Col: th.Dim, Latin: true, Gap: 9},
 		})
 	}
 

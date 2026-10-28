@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	netLib "net"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -23,6 +25,10 @@ import (
 //   - 局域网地址取默认路由接口的 IPv4，不取「第一个非回环地址」
 //     （那样可能取到 docker0 的 172.17.0.1）
 //   - 内存已用 = 总容量 - 可用，保证 已用 + 可用 == 总容量（三项自洽）
+//   - 内存总量有两个口径，必须分清：MemTotalGB 是内核可见（16 GB 机器只有
+//     15.4 GiB，核显 stolen + 固件预留吃掉了 0.6 GiB），MemPhysGB 才是商品页
+//     写的物理安装容量（读 SMBIOS type 17）。百分比只能拿 MemTotalGB 当分母，
+//     否则 43% 对不上 已用/总量。
 type SystemMonitor struct {
 	CPUPercent float64
 	CPUCores   []float64
@@ -32,7 +38,8 @@ type SystemMonitor struct {
 
 	MemPercent  float64
 	MemUsedGB   float64
-	MemTotalGB  float64
+	MemTotalGB  float64 // 内核可见总量（MemTotal，已扣除核显/固件预留）
+	MemPhysGB   float64 // 物理安装容量（SMBIOS type 17 汇总）；0 = 读不到
 	MemAvailGB  float64
 	MemHistory  []float64
 	MemCacheGB  float64 // buff/cache（Buffers + Cached）
@@ -199,6 +206,64 @@ func (s *SystemMonitor) getCPUTempFromFile() float64 {
 	return 0
 }
 
+// ------------------------------------------------------------
+//  物理安装内存（SMBIOS type 17）
+// ------------------------------------------------------------
+//
+// 为什么不能只看 /proc/meminfo：MemTotal 是「内核能用的内存」，核显 stolen
+// 显存与固件/ACPI 预留已经被扣掉。R1（16 GB DDR5）实测 MemTotal=15.4 GiB，
+// 差额 0.6 GiB 里 124 MB 是 Graphics Stolen、其余是固件预留 —— 不是缩水。
+//
+// /sys/firmware/dmi/entries/17-*/raw 是裸 SMBIOS 结构，不需要装 dmidecode。
+// 注意：SMBIOS 规范里的字段偏移是**从结构首字节算起**（type/len/handle 占
+// 0x00~0x03 也算在内），不是从 formatted area 算 —— 这点搞错会读到
+// 0x0201=513 MB 这种鬼数字（本机第一版就是踩了这个坑，界面显示「物理 1 GB」）：
+//   0x00  type(=17)   0x01  length   0x02~0x03  handle
+//   0x0C  Size uint16（MB；0=空插槽；0xFFFF=见扩展字段）
+//   0x1C  Extended Size uint32（MB）
+// 读不到（非 x86 / 权限不足 / SMBIOS 未导出）返回 0，界面自行降级，绝不编造。
+var (
+	physMemOnce sync.Once
+	physMemVal  float64
+)
+
+func physicalMemGB() float64 {
+	physMemOnce.Do(func() { physMemVal = readDMIPhysicalMemGB() })
+	return physMemVal
+}
+
+func readDMIPhysicalMemGB() float64 {
+	dirs, err := filepath.Glob("/sys/firmware/dmi/entries/17-*")
+	if err != nil {
+		return 0
+	}
+	var totalMB uint64
+	for _, dir := range dirs {
+		b, err := os.ReadFile(filepath.Join(dir, "raw"))
+		if err != nil || len(b) < 0x0E {
+			continue
+		}
+		size := binary.LittleEndian.Uint16(b[0x0C:])
+		var mb uint64
+		switch {
+		case size == 0x0000: // 该插槽没插内存
+			continue
+		case size == 0xFFFF: // 超出 32 GB 上限，走扩展字段
+			if len(b) < 0x20 {
+				continue
+			}
+			mb = uint64(binary.LittleEndian.Uint32(b[0x1C:]))
+		default:
+			mb = uint64(size)
+		}
+		totalMB += mb
+	}
+	if totalMB == 0 {
+		return 0
+	}
+	return float64(totalMB) / 1024
+}
+
 func (s *SystemMonitor) UpdateMemory() error {
 	v, err := mem.VirtualMemory()
 	if err != nil {
@@ -213,6 +278,7 @@ func (s *SystemMonitor) UpdateMemory() error {
 	}
 
 	s.MemTotalGB = total / (1024 * 1024 * 1024)
+	s.MemPhysGB = physicalMemGB()
 	s.MemAvailGB = avail / (1024 * 1024 * 1024)
 	s.MemUsedGB = used / (1024 * 1024 * 1024)
 	if total > 0 {
