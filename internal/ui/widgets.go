@@ -602,6 +602,38 @@ type TPart struct {
 	Col   RGBA
 	Latin bool
 	Size  int // 0 表示沿用默认字号
+	// Gap 段前额外间隙（像素）。混排里靠空格拉开距离是不精确的 ——
+	// 空格宽度随字号线性放大，40px 数字旁边的空格能有 10px，
+	// 小字旁边只有 4px，同一套写法在不同字号下疏密完全不同。
+	// 需要「数字 ↔ 单位」「值 ↔ 标签」这类固定间隙时用它。
+	Gap int
+}
+
+// drawTracked 逐字绘制并追加字距 track（yBase 为基线，返回总宽）。
+//
+// 为什么需要它：SDL_ttf 一次渲染整串时字距完全由字体决定，中文标题在
+// 20~24px 下调完就是字字相接的一整块墨，看着发闷。这里按字推进并追加
+// track 像素，标题才有呼吸感。
+//
+// 逐字渲染会丢掉拉丁 kerning，所以只用于**标题类短文本**；
+// 数字、正文一律走整串渲染，不做字距处理。
+func drawTracked(c *Canvas, fs *FontSet, s string, x, yBase, size int, col RGBA, track int) int {
+	cx := x
+	for _, r := range s {
+		ch := string(r)
+		var im *glyphImg
+		if isLatinRune(r) {
+			im = glyphLatin(fs, size, ch, col)
+		} else {
+			im = glyph(fs, size, ch, col)
+		}
+		if im != nil && im.h > 0 {
+			blitGlyph(c, im, cx, yBase-im.h)
+			cx += im.w
+		}
+		cx += track
+	}
+	return cx - x
 }
 
 // isLatinRune 判断该字符应交给拉丁字体族（数字/英文等）
@@ -690,6 +722,7 @@ func measureParts(fs *FontSet, def int, parts []TPart) (int, int) {
 	w, h := 0, 0
 	for _, p := range parts {
 		sz := partSize(p, def)
+		w += p.Gap
 		if p.Latin {
 			w += TextWidthL(fs, p.S, sz)
 			if hh := TextHeightL(fs, p.S, sz); hh > h {
@@ -710,6 +743,7 @@ func DrawPartsL(c *Canvas, fs *FontSet, x, yBase, def int, parts []TPart) int {
 	cx := x
 	for _, p := range parts {
 		sz := partSize(p, def)
+		cx += p.Gap
 		if p.Latin {
 			hh := TextHeightL(fs, p.S, sz)
 			DrawTextL(c, fs, p.S, cx, yBase-hh, sz, p.Col)
