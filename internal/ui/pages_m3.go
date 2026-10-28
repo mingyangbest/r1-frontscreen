@@ -21,7 +21,8 @@ package ui
 //   - 节奏：内容首行基线 +74~+92、进度条顶 = 文字基线 +12、
 //     任何墨迹距卡底 ≥ 12、卡间距统一 14
 //
-//  其余约定不变：满版排版、公网 IP 打码、读不到显示 — 绝不编造。
+//  其余约定不变：满版排版、公网 IP 屏上明文（外发截图再单独打码）、
+//  读不到显示 — 绝不编造。
 //  三页：环境（fullTop 大时钟） → 详情 → 系统
 // ============================================================
 
@@ -598,7 +599,7 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 		})
 	}
 
-	// ---------------- 网络（绿卡，行内「标签 + 值」；公网应用内已打码）----------------
+	// ---------------- 网络（绿卡，行内「标签 + 值」；屏上明文，外发截图再打码）----------------
 	if c.ClipVisible(PadX, syNetY, CardW, syNetH) {
 		m3Card(c, fs, PadX, syNetY, CardW, syNetH, hueGreen, "网络")
 		iface := m.NetIface
@@ -611,10 +612,12 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 			{S: iface, Col: th.Dim, Latin: true, Gap: 7},
 			{S: ipOrDash(m.LocalIP), Col: th.Text, Latin: true, Gap: 12},
 		})
+		// 公网 IP 屏上显示完整明文：这块屏在自家墙/机柜上，遮蔽没有意义，
+		// 排障时反而要读完整地址。对外分享截图时再单独打码（docs/screenshots）。
 		pub := "获取中"
 		if d.Net != nil {
 			if pi := d.Net.PublicIP(); pi.OK && pi.IP != "" {
-				pub = maskPubIP(pi.IP)
+				pub = pi.IP
 			}
 		}
 		DrawPartsL(c, fs, PadX+m3Pad, syNetY+111, FzSmall, []TPart{

@@ -3,7 +3,6 @@ package ui
 import (
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"r1-toolbox/internal/hardware"
@@ -250,17 +249,6 @@ func ipOrDash(s string) string {
 		return "—"
 	}
 	return s
-}
-
-// maskPubIP 公网 IP 半遮蔽（Material You 三页版，2026-10-28 洋哥认可）：
-// 屏幕是物理可见的，访客瞄一眼就能读走完整出口 IP。
-// 系统页保留前两段（网段信息对排障有用），后两段打点 —— 截图外发不泄密。
-func maskPubIP(ip string) string {
-	parts := strings.Split(ip, ".")
-	if len(parts) != 4 {
-		return "•••"
-	}
-	return parts[0] + "." + parts[1] + ".•••••"
 }
 
 // FullTopPage 全出血顶栏页：顶栏区（0~96）由页面自身接管绘制。
