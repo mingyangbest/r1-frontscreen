@@ -28,12 +28,18 @@ package ui
 
 import (
 	"fmt"
+	"time"
 
-	"r1-toolbox/internal/hardware"
 	"r1-toolbox/internal/monitor"
+	"r1-toolbox/internal/screen"
 )
 
-const appVersion = "v0.5.0"
+// Version 屏幕「设备」卡右上角显示的版本号。
+//
+// 由 cmd/main 通过 -ldflags "-X r1-toolbox/internal/ui.Version=v0.6.0"
+// 注入（见 Makefile），默认 "dev"。硬编码版本号会与 git tag 对不上 ——
+// 屏幕写着 v0.5.0、跑的是哪次提交只有天知道。
+var Version = "dev"
 
 // fmtMBps 速率文本：位数随量级收缩，避免 0.04 那样难读的数字
 func fmtMBps(v float64) string {
@@ -45,6 +51,33 @@ func fmtMBps(v float64) string {
 	default:
 		return fmt.Sprintf("%.2f", v)
 	}
+}
+
+// tempText 温度文本。读不到就是「—」，绝不显示 0°
+// （旧实现 clamp(0,120) 会把「传感器读不到」画成一个结结实实的 0°C）。
+func tempText(v float64) string {
+	if v <= 0 {
+		return "—"
+	}
+	return fmt.Sprintf("%.0f°", v)
+}
+
+// fitText 按像素宽度裁字，超宽补省略号。
+//
+// 中文字宽是字号量级，14 个字符的 FzLarge 主机名能铺 500+px —— 直接
+// 硬截字符数挡不住溢出。这里量真实墨迹宽度，保证画出来的一定放得下。
+func fitText(fs *FontSet, s string, size, maxW int) string {
+	if maxW <= 0 || mixedWidth(fs, size, s) <= maxW {
+		return s
+	}
+	rs := []rune(s)
+	for i := len(rs) - 1; i > 0; i-- {
+		cand := string(rs[:i]) + "…"
+		if mixedWidth(fs, size, cand) <= maxW {
+			return cand
+		}
+	}
+	return "…"
 }
 
 // ------------------------------------------------------------
@@ -113,12 +146,16 @@ func m3Note(c *Canvas, fs *FontSet, xRight, yBase int, th *Theme, text string) {
 }
 
 // hintOf 页面顶部右侧的滑动提示（对照效果稿）
+//
+// 系统页这一条原本写「滑左回首页」—— 但向左滑到底其实是循环回第一页，
+// 提示反而在描述一个不存在的动作。这里改成提示「上滑换主题」：
+// 换主题是个隐藏手势，不给提示没人会发现（4 套主题等于白做）。
 func hintOf(name string) string {
 	switch name {
 	case "详情":
 		return "滑左翻页"
 	case "系统":
-		return "滑左回首页"
+		return "上滑换主题"
 	}
 	return ""
 }
@@ -171,7 +208,8 @@ func (p *EnvPage) DataRects(d *DrawCtx) []Rect {
 
 func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 	th, fs := d.Theme, d.Fonts
-	m := p.mon
+	// 取一份值拷贝：采样在后台协程跑，直接读 p.mon 的字段是数据竞争。
+	m := p.mon.Snapshot()
 
 	// ---------------- 大时钟 + 日期天气行（顶栏接管区）----------------
 	if c.ClipVisible(0, 0, c.W, envTopH) {
@@ -217,10 +255,17 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 		cpu := clamp(d.Ease("env.cpu", m.CPUPercent), 0, 100)
 		mem := clamp(d.Ease("env.mem", m.MemPercent), 0, 100)
 		temp := clamp(d.Ease("env.temp", m.CPUTemp), 0, 120)
+		// 温度读不到时画「—」，不画 0°
+		tempStr := "—"
+		tempUnit := ""
+		if temp > 0 {
+			tempStr = fmt.Sprintf("%.0f", temp)
+			tempUnit = "°"
+		}
 		cards := []mini{
 			{"CPU", fmt.Sprintf("%.0f", cpu), "%", cpu, hueBlue},
 			{"内存", fmt.Sprintf("%.0f", mem), "%", mem, huePurple},
-			{"温度", fmt.Sprintf("%.0f", temp), "°", temp, hueAmber},
+			{"温度", tempStr, tempUnit, temp, hueAmber},
 		}
 		for i, mc := range cards {
 			cx := PadX + i*(104+12)
@@ -352,7 +397,7 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 }
 
 // coreCount 逻辑核心数（页 1 每核条用）
-func coreCount(m *monitor.SystemMonitor) int {
+func coreCount(m monitor.Snapshot) int {
 	if m.CPUCoreNum > 0 {
 		return m.CPUCoreNum
 	}
@@ -389,7 +434,7 @@ func (p *DetailPage) DataRects(d *DrawCtx) []Rect {
 
 func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 	th, fs := d.Theme, d.Fonts
-	m := p.mon
+	m := p.mon.Snapshot()
 
 	// ---------------- CPU 历史 · 60 秒（大曲线，蓝卡）----------------
 	if c.ClipVisible(PadX, dtCpuY, CardW, dtCpuH) {
@@ -482,12 +527,12 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 		// 数字基线 +89；**标签单独画、基线抬 6**（同基线时 17px 标签吊在
 		// 大数字下沿，视觉上下坠），抬 6 后落在数字的视觉中线上。
 		nw := DrawPartsL(c, fs, PadX+m3Pad, dtTempY+89, FzLarge, []TPart{
-			{S: fmt.Sprintf("%.0f°", cpuT), Col: th.Text, Latin: true},
+			{S: tempText(cpuT), Col: th.Text, Latin: true},
 		})
 		DrawPartsL(c, fs, PadX+m3Pad+nw+7, dtTempY+83, FzTiny,
 			[]TPart{{S: "CPU", Col: th.Sub, Latin: true}})
 		dw := DrawPartsL(c, fs, PadX+168, dtTempY+89, FzLarge, []TPart{
-			{S: fmt.Sprintf("%.0f°", diskT), Col: th.Text, Latin: true},
+			{S: tempText(diskT), Col: th.Text, Latin: true},
 		})
 		DrawPartsL(c, fs, PadX+168+dw+7, dtTempY+83, FzTiny,
 			[]TPart{{S: "硬盘", Col: th.Sub}})
@@ -546,11 +591,11 @@ func fanModeCN(m string) string {
 
 type SysPage struct {
 	mon *monitor.SystemMonitor
-	br  *hardware.BrightnessController
+	scr *screen.Control
 }
 
-func NewSysPage(mon *monitor.SystemMonitor, br *hardware.BrightnessController) *SysPage {
-	return &SysPage{mon: mon, br: br}
+func NewSysPage(mon *monitor.SystemMonitor, scr *screen.Control) *SysPage {
+	return &SysPage{mon: mon, scr: scr}
 }
 
 func (p *SysPage) PageName() string { return "系统" }
@@ -575,15 +620,17 @@ func (p *SysPage) DataRects(d *DrawCtx) []Rect {
 
 func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 	th, fs := d.Theme, d.Fonts
-	m := p.mon
+	m := p.mon.Snapshot()
 
 	// ---------------- 设备（蓝卡）----------------
 	if c.ClipVisible(PadX, syDevY, CardW, syDevH) {
 		m3Card(c, fs, PadX, syDevY, CardW, syDevH, hueBlue, "设备")
-		m3Note(c, fs, PadX+CardW-m3Pad, syDevY+m3TitleBase, th, appVersion)
-		// 主机名基线 +85（墨迹 [55,85]）—— 标题墨迹底 +36 之下 19
+		m3Note(c, fs, PadX+CardW-m3Pad, syDevY+m3TitleBase, th, Version)
+		// 主机名基线 +85（墨迹 [55,85]）—— 标题墨迹底 +36 之下 19。
+		// 按**像素宽度**裁剪：40px 字号下 14 个中文字能铺 500+px，
+		// 按字符数截断挡不住溢出（旧版就是这样顶出卡片右边缘的）。
 		DrawPartsL(c, fs, PadX+m3Pad, syDevY+85, FzLarge,
-			splitParts(trim(d.Host, 14), th.Text))
+			splitParts(fitText(fs, d.Host, FzLarge, CardW-2*m3Pad), th.Text))
 		// 副标题墨迹顶 +105（主机名墨迹底 +85 之下 20）→ 基线 +122，卡底 +140 → 18
 		//
 		// 这里是**规格卡**，内存写物理安装容量（SMBIOS），和商品页 16 GB 一致；
@@ -606,23 +653,32 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 		if iface == "" {
 			iface = "—"
 		}
-		// 两行基线 +74 / +111（墨迹 [57,78] / [94,111]），卡底 +129 → 18
+		// 局域网行：标签 60 + gap 7 + 网卡名 + gap 12 + IPv4（最长 15 字符）。
+		// 卡内可用 332px，网卡名给 104px 上限 —— 超长名裁掉而不是去顶 IP
+		// （92px 会把 enp2s0-ovs 截成 enp2s0-…，-ovs 对排障有用）。
 		DrawPartsL(c, fs, PadX+m3Pad, syNetY+74, FzSmall, []TPart{
 			{S: "局域网", Col: th.Dim},
-			{S: iface, Col: th.Dim, Latin: true, Gap: 7},
+			{S: fitText(fs, iface, FzSmall, 104), Col: th.Dim, Latin: true, Gap: 7},
 			{S: ipOrDash(m.LocalIP), Col: th.Text, Latin: true, Gap: 12},
 		})
 		// 公网 IP 屏上显示完整明文：这块屏在自家墙/机柜上，遮蔽没有意义，
 		// 排障时反而要读完整地址。对外分享截图时再单独打码（docs/screenshots）。
-		pub := "获取中"
+		//
+		// 三态区分（2026-10-28）：获取中 / 明文 / 获取失败。
+		// 旧实现只有「获取中」与「明文」两态，网络断了就永远停在「获取中」——
+		// 那是把失败伪装成进行中。
+		pub, pubCol := "获取中", th.Dim
 		if d.Net != nil {
-			if pi := d.Net.PublicIP(); pi.OK && pi.IP != "" {
-				pub = pi.IP
+			pi := d.Net.PublicIP()
+			if pi.OK && pi.IP != "" {
+				pub, pubCol = pi.IP, th.Sub
+			} else if !pi.TriedAt.IsZero() {
+				pub, pubCol = "获取失败", th.Dim
 			}
 		}
 		DrawPartsL(c, fs, PadX+m3Pad, syNetY+111, FzSmall, []TPart{
 			{S: "公网", Col: th.Dim},
-			{S: pub, Col: th.Sub, Latin: true, Gap: 12},
+			{S: pub, Col: pubCol, Latin: true, Gap: 12},
 		})
 	}
 
@@ -679,10 +735,12 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 	// ---------------- 控制（紫卡：亮度滑条带圆钮 + 关屏按钮）----------------
 	if c.ClipVisible(PadX, syCtrlY, CardW, syCtrlH) {
 		m3Card(c, fs, PadX, syCtrlY, CardW, syCtrlH, huePurple, "控制")
-		cur, err := p.br.Get()
+		// 亮度走 screen.Control：它是背光的唯一状态源，
+		// 直接读硬件会让"Web 已息屏"这件事在界面上不可见。
+		cur := p.scr.Bright()
 		pct := 0.0
-		if err == nil && p.br.Max() > 0 {
-			pct = float64(cur) / float64(p.br.Max())
+		if cur > 0 && p.scr.Max() > 0 {
+			pct = float64(cur) / float64(p.scr.Max())
 		}
 		// 亮度行：文字基线 +73（墨迹 [56,73]），滑条中心 +64 与其墨迹中心对齐
 		DrawPartsL(c, fs, PadX+m3Pad, syCtrlY+73, FzSmall,
@@ -702,12 +760,33 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 		DrawTextC(c, fs, "关闭屏幕", PadX+CardW/2, syCtrlY+126, FzSmall, Lit(th.Danger, 0.25))
 	}
 
-	// ---------------- 服务状态 pill ----------------
+	// ---------------- 面板令牌 + 数据新鲜度 ----------------
+	//
+	// 左边是 Web 面板令牌：屏幕挂在自家墙上，能看到屏幕的人本来就有
+	// 物理接触权限 —— 令牌显示在这里比藏在 journal 里更符合威胁模型。
+	// 右边是**数据时间戳**：采样协程万一挂掉，屏幕数字会停在最后一秒，
+	// 只有这里能看出来（旧版是一句固定的「服务运行中」，进程活着但
+	// 主循环卡死也照样显示）。
 	if c.ClipVisible(PadX, syPillY, CardW, 40) {
-		c.FillRoundRect(PadX, syPillY, 200, 40, 20, WithA(th.Text, 10))
-		c.FillCircle(PadX+22, syPillY+20, 4, P.NetDown)
-		DrawTextMixL(c, fs, PadX+34, syPillY+12, FzTiny, th.Sub,
-			"服务运行中 · 夜间调暗已启用")
+		c.FillRoundRect(PadX, syPillY, 158, 40, 20, WithA(th.Text, 10))
+		c.FillCircle(PadX+20, syPillY+20, 4, P.NetDown)
+		tok := d.WebToken
+		if tok == "" {
+			tok = "未设置"
+		}
+		DrawTextMixL(c, fs, PadX+32, syPillY+12, FzTiny, th.Sub, "令牌 "+tok)
+
+		c.FillRoundRect(PadX+170, syPillY, CardW-170, 40, 20, WithA(th.Text, 10))
+		upd := "—"
+		dot := th.Dim
+		if !m.UpdatedAt.IsZero() {
+			upd = m.UpdatedAt.Format("15:04:05")
+			if time.Since(m.UpdatedAt) > 10*time.Second {
+				dot = th.Warn // 超过 5 个采样周期没更新：数据已经不可信
+			}
+		}
+		c.FillCircle(PadX+186, syPillY+20, 3, dot)
+		DrawTextMixL(c, fs, PadX+196, syPillY+12, FzTiny, th.Dim, "数据 "+upd)
 	}
 }
 
@@ -722,12 +801,12 @@ func (p *SysPage) Tap(x, y int, d *DrawCtx) {
 	}
 	// 亮度行
 	if y >= syCtrlY+50 && y <= syCtrlY+110 && x >= PadX && x <= PadX+CardW {
-		if p.br == nil {
+		if p.scr == nil {
 			return
 		}
-		max := p.br.Max()
-		cur, err := p.br.Get()
-		if err != nil {
+		max := p.scr.Max()
+		cur := p.scr.Bright()
+		if cur < 0 || max <= 0 {
 			return
 		}
 		step := max / 10
@@ -745,7 +824,7 @@ func (p *SysPage) Tap(x, y int, d *DrawCtx) {
 		if cur > max {
 			cur = max
 		}
-		if p.br.Set(cur) == nil {
+		if p.scr.Apply(cur) == nil {
 			d.BumpData()
 		}
 	}

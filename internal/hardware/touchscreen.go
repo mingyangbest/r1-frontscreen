@@ -30,14 +30,14 @@ type TouchPoint struct {
 }
 
 type TouchScreen struct {
-	fd          int
-	running     bool
-	lastX       uint16
-	lastY       uint16
-	hasTouch    bool
-	ringBuf     []byte
-	ringLen     int
-	zeroCount   int
+	fd        int
+	running   bool
+	lastX     uint16
+	lastY     uint16
+	hasTouch  bool
+	ringBuf   []byte
+	ringLen   int
+	zeroCount int
 }
 
 func NewTouchScreen() (*TouchScreen, error) {

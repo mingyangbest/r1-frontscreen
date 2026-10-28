@@ -8,6 +8,7 @@ import (
 	"r1-toolbox/internal/hardware"
 	"r1-toolbox/internal/monitor"
 	"r1-toolbox/internal/netinfo"
+	"r1-toolbox/internal/screen"
 )
 
 // ============================================================
@@ -19,12 +20,15 @@ type DrawCtx struct {
 	Fonts     *FontSet
 	Mon       *monitor.SystemMonitor
 	Fan       *hardware.FanController
-	Bright    *hardware.BrightnessController
+	Screen    *screen.Control  // 背光状态机（系统页滑条/关屏按钮）
 	Net       *netinfo.Service // 公网 IP / 天气（可能为 nil）
 	Now       time.Time
 	T         float64 // 启动至今秒数（仅用于动画相位）
 	StartTime time.Time
 	Host      string
+	// WebToken 面板令牌，显示在系统页底部 —— 「物理接触设备即授权」，
+	// 不需要去翻 journal 找。
+	WebToken string
 
 	// OnScreenOff 由主程序注入：请求立即关屏（并可被触摸唤醒）
 	OnScreenOff func()
@@ -38,7 +42,6 @@ type DrawCtx struct {
 	// dataGen 每完成一次数据采样自增。数字类内容散落在整页，
 	// 代数一变就整页重画，比逐块去猜哪里变了更简单也更可靠。
 	dataGen uint64
-
 }
 
 // BumpData 数据采样完成后调用，宣告"屏幕上的数字全部需要刷新"
@@ -230,7 +233,6 @@ func fmtBytes(b uint64) string {
 //    下  = 系统信息（主机名 / 局域网 / 公网 IP / 已运行）
 //  注意：按洋哥要求，「系统负载」不再出现在本页
 // ============================================================
-
 
 // clamp 数值限幅
 func clamp(v, lo, hi float64) float64 {

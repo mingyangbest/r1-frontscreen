@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+    tags: ['v*']
+  pull_request:
+
+# 四道门：格式 → 静态分析 → 测试（含 -race）→ 构建。
+# vendor/ 已入仓：构建不依赖 proxy.golang.org（设备/CI 都可能没有外网）。
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      # ui 包链接 SDL2（textrender 走 SDL_ttf）；测试也要 fonts 提供真实字体
+      - name: 安装 SDL2 与 CJK 字体
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libsdl2-dev libsdl2-ttf-dev fonts-noto-cjk
+
+      - name: gofmt
+        run: |
+          test -z "$(gofmt -l internal cmd)" || {
+            echo "以下文件未格式化:"; gofmt -l internal cmd; exit 1; }
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -count=1 ./internal/...
+
+      - name: go test -race（并发修复回归）
+        run: go test -race -count=1 ./internal/config/ ./internal/hardware/ ./internal/screen/ ./internal/web/ ./internal/execx/
+
+      - name: build（注入版本号，与 Makefile 同口径）
+        run: |
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+          COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+          CGO_ENABLED=1 go build -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
+            -o build/r1-toolbox ./cmd
+
+  release:
+    # 打 tag 时交叉编译并附到 Release（人工触发推送 tag 后自动出包）
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: 安装 ARM64 交叉工具链与 SDL2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu pkg-config \
+            libsdl2-dev:arm64 libsdl2-ttf-dev:arm64 || true
+
+      - name: 构建 linux/arm64
+        run: |
+          VERSION=${GITHUB_REF_NAME}
+          COMMIT=$(git rev-parse --short HEAD)
+          CGO_ENABLED=1 \
+          CC=aarch64-linux-gnu-gcc \
+          PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig \
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
+            -o build/r1-toolbox-linux-arm64 ./cmd || \
+          echo "ARM64 交叉编译失败（SDL2 arm64 不可用），跳过附件"
+
+      - name: 上传到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/r1-toolbox-linux-arm64
+          generate_release_notes: true
+        continue-on-error: true

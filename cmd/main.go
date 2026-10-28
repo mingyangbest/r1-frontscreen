@@ -3,17 +3,31 @@ package main
 import (
 	"crypto/rand"
 	"fmt"
-	"log"
+	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/veandco/go-sdl2/sdl"
 
 	"r1-toolbox/internal/config"
 	"r1-toolbox/internal/hardware"
+	"r1-toolbox/internal/logx"
 	"r1-toolbox/internal/monitor"
 	"r1-toolbox/internal/netinfo"
+	"r1-toolbox/internal/screen"
 	"r1-toolbox/internal/ui"
+	"r1-toolbox/internal/watchdog"
 	"r1-toolbox/internal/web"
+)
+
+// 版本信息由 -ldflags 注入（见 Makefile）：
+//
+//	go build -ldflags "-X main.version=v0.6.0 -X main.commit=a1b2c3d"
+//
+// 硬编码在源码里的话，屏幕上的版本号与 git tag 迟早对不上。
+var (
+	version = "dev"
+	commit  = "dev"
 )
 
 // genWebToken 生成 8 位面板令牌。字符集剔除 0/O/1/I/L 等易混字符，
@@ -36,34 +50,38 @@ const (
 	// 页面滑动单独给 60fps：376px 宽的位移在 0.38s 内完成，
 	// 30fps 只有 11 帧、每帧跳 34px —— 无论缓动怎么调都会"一顿一顿"。
 	//
-	// 🔴 天气图标已改**静态**（洋哥拍板，2026-09-27）：概览页不再有常驻
-	// 动画，"animating" 只剩**数值缓动**一种含义 —— 12fps 让 0.16s 的
-	// 缓动过渡至少落 2 帧，看得出是渐变而不是跳变。曾经的自适应帧率
-	// 机制（animFPSFor：按动画位移速度反推帧率）随动画一起退役。
-	//
 	// 静止（既没有换页也没有缓动）8fps 心跳，配合跳帧机制，
 	// 静态页 8 帧里 7 帧什么都不画，纯粹保触摸响应。
-	fpsSlide  = 60
-	fpsEase   = 12
-	fpsIdle   = 8
+	fpsSlide = 60
+	fpsEase  = 12
+	fpsIdle  = 8
 )
 
 func main() {
-	log.Println("R1 Toolbox 启动中...")
+	logx.Printf("R1 Toolbox %s (%s) 启动中...", version, commit)
 
-	cfg, err := config.Load()
+	// ---------------- 配置 ----------------
+	store, err := config.NewStore(config.ConfigPath())
 	if err != nil {
-		log.Printf("加载配置失败，使用默认配置: %v", err)
-		cfg = config.DefaultConfig()
+		// 读不出来时用默认值继续（屏幕必须能亮），但错误必须打出来 ——
+		// 静默回落会让用户的亮度/风扇曲线在毫无提示的情况下全部丢失。
+		logx.Printf("配置读取失败，已用默认值启动: %v", err)
+	}
+	cfg := store.Get()
+
+	if cfg.Debug || os.Getenv("R1_DEBUG") == "1" {
+		logx.SetDebug(true)
+		logx.Printf("明细日志已开启（性能/采样审计）")
 	}
 
+	ui.Version = version
+
+	// ---------------- 硬件 ----------------
 	mon := monitor.NewSystemMonitor()
 
 	fanCtrl := hardware.NewFanController()
-	fanCtrl.CPUMinTemp = cfg.Fan.CPU.MinTemp
-	fanCtrl.CPUMaxTemp = cfg.Fan.CPU.MaxTemp
-	fanCtrl.HDDMinTemp = cfg.Fan.HDD.MinTemp
-	fanCtrl.HDDMaxTemp = cfg.Fan.HDD.MaxTemp
+	fanCtrl.SetCPUTempRange(cfg.Fan.CPU.MinTemp, cfg.Fan.CPU.MaxTemp)
+	fanCtrl.SetHDDTempRange(cfg.Fan.HDD.MinTemp, cfg.Fan.HDD.MaxTemp)
 	fanCtrl.SetCPUMode(cfg.Fan.CPU.Mode)
 	fanCtrl.SetHDDMode(cfg.Fan.HDD.Mode)
 	// 机箱风扇的自动调速改为跟踪**真实盘体温度**（多盘取最高）。
@@ -76,117 +94,114 @@ func main() {
 	rgbCtrl.SetMode(cfg.RGB.Mode, cfg.RGB.Color)
 
 	brightness := hardware.NewBrightnessController(cfg.Hardware.BrightnessPath, 0, 96000)
-	// 启动即按昼夜定亮度：夜里重启服务不再被白天亮度闪一下眼。
-	startBright := cfg.Screen.Brightness
-	if ui.IsNight() && cfg.Screen.NightBrightness > 0 {
-		startBright = cfg.Screen.NightBrightness
-	}
-	brightness.Set(startBright)
 
-	// ---------------- Web 面板令牌（2026-09-27 安全修复）----------------
+	// ---------------- 屏幕状态机 ----------------
 	//
-	// 🔴 修复前 /api/* 完全无鉴权且监听所有网卡，局域网任意设备可以
-	// 息屏、改风扇曲线。现在：令牌为空时生成 8 位无歧义随机串
-	// （去掉 0/O/1/I/L，屏幕上抄写不出错），持久化到配置、打印到
-	// 启动日志、显示在屏幕「系统」页 —— 物理接触设备即授权。
+	// 渲染器依赖 screenCtl（系统页的亮度滑条要读写它），screenCtl 又需要
+	// 一个回调控渲染器 —— 用 atomic 指针打破这个循环，顺便保证回调
+	// 在不同协程里读到的是同一个渲染器实例。
+	var rendererPtr atomic.Pointer[ui.Renderer]
+
+	screenCtl := screen.New(brightness,
+		cfg.Screen.Brightness, cfg.Screen.NightBrightness,
+		ui.IsNight,
+		func(off bool) {
+			if r := rendererPtr.Load(); r != nil {
+				r.SetScreenOff(off)
+			}
+		},
+		func(day, night int) {
+			// 手动亮度落盘：夜里调的亮度记到 night，白天调的记到 day，
+			// 这样跨界之后用户的选择还在。
+			if err := store.Update(func(c *config.Config) {
+				c.Screen.Brightness = day
+				c.Screen.NightBrightness = night
+			}); err != nil {
+				logx.Printf("保存亮度配置失败: %v", err)
+			}
+		})
+
+	// ---------------- Web 令牌 ----------------
 	if cfg.Web.Token == "" {
-		if tok, err := genWebToken(); err == nil {
+		if tok, gerr := genWebToken(); gerr == nil {
 			cfg.Web.Token = tok
-			cfg.Save()
+			if err := store.Update(func(c *config.Config) { c.Web.Token = tok }); err != nil {
+				logx.Printf("保存面板令牌失败: %v", err)
+			}
+			logx.Printf("已生成 Web 面板令牌（显示在屏幕「系统」页底部）")
 		} else {
-			log.Printf("生成 Web 令牌失败（面板将以无令牌状态运行）: %v", err)
+			logx.Printf("生成 Web 令牌失败，面板将不可用: %v", gerr)
 		}
 	}
-	if cfg.Web.Enabled && cfg.Web.Token != "" {
-		log.Printf("Web 面板令牌: %s（屏幕「系统」页同步显示）", cfg.Web.Token)
+	if !cfg.Web.Enabled {
+		logx.Printf("Web 面板已在配置中禁用")
+	} else if cfg.Web.Token == "" {
+		logx.Printf("警告: 无令牌，Web 面板不会启动（fail-closed）")
 	}
+
+	// ---------------- 渲染器 ----------------
+	renderer, err := ui.NewRenderer(mon, fanCtrl, screenCtl)
+	if err != nil {
+		logx.Printf("渲染器初始化失败: %v", err)
+		os.Exit(1)
+	}
+	defer renderer.Cleanup()
+	rendererPtr.Store(renderer)
+	renderer.Ctx.WebToken = store.Get().Web.Token
+
+	// 启动即按昼夜定亮度：夜里重启服务不再被白天亮度闪一下眼
+	brightness.Set(screenCtl.Target())
+	logx.Printf("背光初始值 %d（%s）", screenCtl.Target(), dayNightText())
 
 	go fanCtrl.Run()
 
-	renderer, err := ui.NewRenderer(mon, fanCtrl, brightness, cfg.Web.Token)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer renderer.Cleanup()
+	// ---------------- 后台采样 ----------------
+	//
+	// CPU/内存/网络 2 秒、磁盘/Docker 60 秒，全部在独立协程里跑。
+	// 渲染线程每帧只取一次快照（值拷贝），smartctl 的 359ms 与
+	// Docker socket 的 3 秒超时再也卡不到触摸响应。
+	sampler := monitor.NewSampler(mon)
+	sampler.Start()
+	defer sampler.Stop()
 
-	// ---------------- 外网信息（公网 IP / 天气），后台定时刷新 ----------------
+	// ---------------- 外网信息（公网 IP / 天气）----------------
 	netSvc := netinfo.New()
 	netSvc.Start()
 	renderer.Ctx.Net = netSvc
-	log.Println("外网信息服务已启动（公网 IP / 天气）")
 
-	// ---------------- 关屏状态（超时息屏 与 界面按钮 共用一条通路）----------------
-	var screenOff bool
-	lastTouchTime := time.Now()
+	// 系统页协议：关闭屏幕按钮走统一状态机
+	renderer.Ctx.OnScreenOff = func() { screenCtl.Off("界面按钮") }
 
-	// ---------------- 夜间自动调暗 ----------------
-	//
-	// 复用天气图标的夜间窗口（18:00–06:00）。只在昼夜窗口切换的瞬间
-	// 调整亮度，不做周期性拉回 —— 夜间通过 Web 面板手动调的亮度不会被
-	// 覆盖，一直保留到下一次跨界。关屏期间跨界不写背光：唤醒路径
-	// （wake）会按当时的昼夜取正确值。
-	nightDim := cfg.Screen.NightBrightness > 0
-	curNight := ui.IsNight()
-	lastNightCheck := time.Now()
-
-	setScreenOff := func(reason string) {
-		if screenOff {
-			return
-		}
-		brightness.Set(0)
-		screenOff = true
-		renderer.SetScreenOff(true)
-		log.Printf("【关屏】%s", reason)
-	}
-	wake := func() {
-		if !screenOff {
-			return
-		}
-		// 夜间唤醒用夜间亮度：18:00 后关屏再点亮，不被日间亮度刺到
-		wakeBright := cfg.Screen.Brightness
-		if ui.IsNight() && cfg.Screen.NightBrightness > 0 {
-			wakeBright = cfg.Screen.NightBrightness
-		}
-		brightness.Set(wakeBright)
-		screenOff = false
-		renderer.SetScreenOff(false)
-		lastTouchTime = time.Now()
-		log.Println("【唤醒】触摸唤醒屏幕")
-	}
-	// 界面上的「关闭屏幕」按钮走这里
-	renderer.Ctx.OnScreenOff = func() { setScreenOff("用户手动关屏") }
-
-	if cfg.Web.Enabled {
-		webServer := web.NewServer(mon, fanCtrl, rgbCtrl, brightness, cfg, renderer)
+	// ---------------- Web 面板 ----------------
+	if cfg.Web.Enabled && cfg.Web.Token != "" {
+		webServer := web.NewServer(mon, fanCtrl, rgbCtrl, brightness, store, screenCtl)
 		go func() {
 			addr := fmt.Sprintf(":%d", cfg.Web.Port)
-			log.Printf("Web 服务器启动在 %s", addr)
+			logx.Printf("Web 面板启动在 %s", addr)
 			if err := webServer.Run(addr); err != nil {
-				log.Printf("Web 服务器错误: %v", err)
+				logx.Printf("Web 服务器错误: %v", err)
 			}
 		}()
 	}
 
-	// 优先 I2C 触摸屏，失败则回退 SDL 触摸
+	// ---------------- 触摸 ----------------
 	useSDLTouch := false
 	touchHandler, err := ui.NewTouchHandlerWithI2C()
 	if err != nil {
-		log.Printf("I2C触摸屏直连不可用（R1固件预期行为），已回退SDL触摸: %v", err)
+		logx.Printf("I2C触摸屏直连不可用（R1固件预期行为），已回退SDL触摸: %v", err)
 		touchHandler = ui.NewTouchHandler()
 		useSDLTouch = true
 	} else {
-		log.Println("使用I2C触摸屏")
+		logx.Println("使用 I2C 触摸屏")
 		defer touchHandler.Close()
 	}
 
 	startTime := time.Now()
+	lastTouchTime := time.Now()
 	screenTimeout := time.Duration(cfg.Screen.Timeout) * time.Second
 	if screenTimeout <= 0 {
-		log.Println("屏幕模式: 常亮（不自动息屏）")
+		logx.Println("屏幕模式: 常亮（不自动息屏）")
 	}
-
-	var lastDiskUpdate time.Time
-	lastDataUpdate := time.Now()
 
 	slideDur := time.Second / fpsSlide
 	idleDur := time.Second / fpsIdle
@@ -197,7 +212,7 @@ func main() {
 
 	// 处理点击：派发给当前页（若支持）
 	dispatchTap := func(x, y int) {
-		if screenOff {
+		if screenCtl.IsOff() {
 			return
 		}
 		if tp, ok := renderer.CurrentPage().(ui.Tappable); ok {
@@ -208,31 +223,19 @@ func main() {
 		}
 	}
 
-	log.Printf("初始化完成，共 %d 个页面", renderer.PageCount())
+	logx.Printf("初始化完成，共 %d 个页面", renderer.PageCount())
+	watchdog.Ready()
 
-	// ---------------- 性能自检 ----------------
-	//
-	// 这块屏常亮，帧率直接等于 CPU 占用与发热，所以"每帧到底花在哪"必须
-	// 是量出来的、不是猜出来的。每 5 秒打一行：实际帧率 / 单帧渲染耗时 /
-	// 单帧循环耗时（不含末尾主动 sleep）。
-	//
-	// 判读方法：循环耗时 → 100% 说明这一档帧率已经跑满 CPU；渲染耗时占
-	// 循环耗时的大头，优化点就在渲染里（全屏重绘 vs 局部重绘）。
-	var perfRender, perfTotal time.Duration
-	var perfFrames int
-	perfSince := time.Now()
-	// 把"渲染之外"的时间也量出来。之前只知道渲染占 37.6ms/s，
-	// 但整个循环是 52ms/s —— 差的这 15ms 到底是事件轮询还是每秒一次
-	// 的系统采样，光看渲染日志永远看不出来，必须分开量。
-	var perfPoll, perfSample time.Duration
-	// 采样一次要 15ms、每秒一次 = 15.5ms/s，占了忙循环的四分之一。
-	// 拆到每个 Update* 才知道该优化谁。
-	var perfCPU, perfMem, perfNet, perfDisk time.Duration
-
+	// ---------------- 主循环 ----------------
 	running := true
 	// 唤醒屏幕的那一次触摸序列要整体吞掉：手指按下时唤醒、抬起时才产生"点击"，
 	// 若不吞掉，唤醒动作会顺带触发底下的按钮（例如又按到「关闭屏幕」）。
 	var swallowUntil time.Time
+
+	lastDataGen := uint64(0)
+	lastNightCheck := time.Now()
+	var lastBeat time.Time
+	beatEvery := watchdog.Interval()
 
 	for running {
 		frameStart := time.Now()
@@ -240,16 +243,15 @@ func main() {
 		// ---------------- SDL 事件 ----------------
 		for event := sdl.PollEvent(); event != nil; event = sdl.PollEvent() {
 			if _, ok := event.(*sdl.QuitEvent); ok {
-				log.Println("收到退出信号")
+				logx.Println("收到退出信号")
 				running = false
 				continue
 			}
 
 			// 触摸/鼠标事件是 SDL 唯一可能把指针重新显示出来的时机，这里保持关闭。
-			// 先用 QUERY 查状态，只有它真的被重新打开时才打一次 ioctl。
 			if v, _ := sdl.ShowCursor(sdl.QUERY); v == sdl.ENABLE {
 				sdl.ShowCursor(sdl.DISABLE)
-				log.Println("鼠标指针被重新打开，已再次隐藏")
+				logx.Println("鼠标指针被重新打开，已再次隐藏")
 			}
 
 			gesture, tap := touchHandler.HandleEvent(event)
@@ -274,8 +276,8 @@ func main() {
 				switch event.(type) {
 				case *sdl.TouchFingerEvent, *sdl.MouseButtonEvent:
 					lastTouchTime = time.Now()
-					if screenOff {
-						wake()
+					if screenCtl.IsOff() {
+						screenCtl.Wake()
 						woke = true
 						swallowUntil = frameStart.Add(2 * time.Second)
 					}
@@ -303,7 +305,7 @@ func main() {
 		if !useSDLTouch && touchHandler != nil {
 			if g := touchHandler.ReadI2CTouch(); g != ui.GestureNone {
 				lastTouchTime = time.Now()
-				wake()
+				screenCtl.Wake()
 				switch g {
 				case ui.GestureSwipeLeft:
 					renderer.SwitchPage(1)
@@ -318,138 +320,90 @@ func main() {
 				dispatchTap(int(tap.X), int(tap.Y))
 			}
 		}
-		perfPoll += time.Since(frameStart)
 
 		// ---------------- 配置热重载 ----------------
 		select {
 		case <-configReloadTicker.C:
-			if newCfg, err := config.Load(); err == nil {
-				screenTimeout = time.Duration(newCfg.Screen.Timeout) * time.Second
-				cfg.Screen.Brightness = newCfg.Screen.Brightness
-				cfg.Screen.NightBrightness = newCfg.Screen.NightBrightness
-				nightDim = cfg.Screen.NightBrightness > 0
+			if fresh, err := config.LoadFrom(store.Path()); err == nil {
+				screenTimeout = time.Duration(fresh.Screen.Timeout) * time.Second
+				screenCtl.SetDayNight(fresh.Screen.Brightness, fresh.Screen.NightBrightness)
+				store.Replace(*fresh)
+				if fresh.Debug != cfg.Debug {
+					logx.SetDebug(fresh.Debug)
+					cfg.Debug = fresh.Debug
+				}
 			}
 		default:
 		}
 
 		// ---------------- 夜间自动调暗（每 30s 检查一次昼夜切换）----------------
-		if nightDim && time.Since(lastNightCheck) >= 30*time.Second {
+		//
+		// 只在切换瞬间调一次，不做周期拉回 —— 夜间通过 Web 面板手动调的
+		// 亮度不会被覆盖，一直保留到下一次跨界。状态全在 screenCtl 里，
+		// Web 息屏时这里不会再"顺手把屏点亮"。
+		if time.Since(lastNightCheck) >= 30*time.Second {
 			lastNightCheck = frameStart
-			if n := ui.IsNight(); n != curNight {
-				curNight = n
-				if !screenOff {
-					if n {
-						brightness.Set(cfg.Screen.NightBrightness)
-						log.Println("【夜间调暗】进入夜间窗口（18:00–06:00），背光降至夜间值")
-					} else {
-						brightness.Set(cfg.Screen.Brightness)
-						log.Println("【夜间调暗】退出夜间窗口，背光恢复日间值")
-					}
-				}
-			}
+			screenCtl.SyncNight()
 		}
 
-		// ---------------- 数据采样（每 2 秒）----------------
+		// ---------------- 数据变化 → 通知重绘 ----------------
 		//
-		// 采样节奏 = 屏幕数字的刷新节奏。1s→2s 是一次明确的取舍：
-		// 采样本身（3.4ms）与它触发的数据重绘帧（每帧 9~15ms）都减半，
-		// 合计省约 12ms/s；代价是数字最多滞后 2 秒 —— 对一块状态屏
-		// 无感，且显示的永远是真实采样值。历史曲线的窗口仍是 60 秒
-		// （容量已同步砍半，见 monitor/system.go），标签口径不变。
-		if frameStart.Sub(lastDataUpdate) >= 2*time.Second {
-			lastDataUpdate = frameStart
-			tSample := time.Now()
-			mon.UpdateCPU()
-			t1 := time.Now()
-			mon.UpdateMemory()
-			t2 := time.Now()
-			mon.UpdateNetwork()
-			t3 := time.Now()
-			// 🔴 这里原本每 5 秒跑一次 mon.UpdateProcesses()，实测单次耗时 72~90ms
-			// （对 390 个进程逐个读 5~6 个 procfs 文件，且 CPUPercent 会反复解析 /proc/stat），
-			// 折合 14~18 ms/s，占了当时总开销的四分之一。
-			// 而它算出来的 s.Processes（Top10 列表）**全程没有任何读取方** ——
-			// 唯一的消费者在一个 .bak 备份目录里，是早期设计的遗留死代码。
-			// 屏幕上显示的「进程数」走的是 UpdateCPU 里的 countProcesses()，与它无关。
-			// 已彻底删除（连同 internal/monitor/process.go 与 gopsutil/v3/process 依赖）。
-			if time.Since(lastDiskUpdate) >= 60*time.Second {
-				mon.UpdateDisk()
-				mon.UpdateContainers()
-				lastDiskUpdate = frameStart
-			}
-			t4 := time.Now()
-			perfCPU += t1.Sub(tSample)
-			perfMem += t2.Sub(t1)
-			perfNet += t3.Sub(t2)
-			perfDisk += t4.Sub(t3)
-			perfSample += t4.Sub(tSample)
-			renderer.Ctx.Now = time.Now()
-			// 数字全变了 —— 通知渲染器这一帧必须整页重画。
-			// 局部重绘只在"数据没动、也没有数值在缓动"时才允许。
+		// 采样在后台跑，主循环只比较版本号。版本变了说明屏幕上的数字
+		// 该刷新了，退一次全屏（或让页面走局部矩形）。
+		if v := sampler.Version(); v != lastDataGen {
+			lastDataGen = v
 			renderer.Ctx.BumpData()
 		}
 
 		// ---------------- 自动息屏（timeout 为 0 时常亮）----------------
-		if screenTimeout > 0 && !screenOff && time.Since(lastTouchTime) > screenTimeout {
-			setScreenOff("超时自动息屏")
+		if screenTimeout > 0 && !screenCtl.IsOff() && time.Since(lastTouchTime) > screenTimeout {
+			screenCtl.Off("超时自动息屏")
+		}
+
+		// ---------------- 看门狗心跳 ----------------
+		//
+		// 主循环活着就等于心跳。若某天某个调用把主循环卡死，systemd 会在
+		// WatchdogSec 后杀掉进程重启 —— 而不是让屏幕定格在一小时前的画面。
+		if time.Since(lastBeat) >= beatEvery {
+			lastBeat = frameStart
+			watchdog.Watchdog()
 		}
 
 		// ---------------- 渲染 ----------------
 		// Tick 放在判定之前：换页刚被触发的那一帧就要立刻切到 60fps，
 		// 否则第一帧仍按静止档的 125ms 间隔走，动画开场就少掉两帧。
+		renderer.Ctx.Now = time.Now()
 		renderer.Ctx.T = frameStart.Sub(startTime).Seconds()
 		renderer.Tick(frameStart)
 		switching := renderer.Animating()
 		animating := switching || renderer.Ctx.NeedsAnim()
 		renderer.Ctx.BeginFrame()
-		tRender := time.Now()
 		renderer.Render(renderer.Ctx)
-		perfRender += time.Since(tRender)
-		perfFrames++
-		perfTotal += time.Since(frameStart)
 
 		// ---------------- 帧率控制 ----------------
 		//
 		// 滑动 60fps（位移敏感）> 数值缓动 12fps（0.16s 过渡落 2 帧）>
 		// 静止 8fps 心跳（配合跳帧，静态页基本零开销，只保触摸响应）。
 		target := idleDur
-		if screenOff {
+		if screenCtl.IsOff() {
 			target = time.Second // 息屏时画面全黑，无需高频重绘
 		} else if switching {
 			target = slideDur // 滑动：最高优先级
 		} else if animating {
-			// 只剩数值缓动一种"动画"：12fps 让 0.16s 过渡落 2 帧
 			target = easeDur
 		}
 		if spent := time.Since(frameStart); spent < target {
 			time.Sleep(target - spent)
 		}
-
-		if perfFrames > 0 && time.Since(perfSince) >= 5*time.Second {
-			el := time.Since(perfSince)
-			n := float64(perfFrames)
-			sec := el.Seconds()
-			// 一条能直接换算成 CPU 的账：每秒各花多少毫秒。
-			// 渲染 + 事件轮询 + 数据采样 ≈ 整个忙循环；剩下的就是睡眠。
-			log.Printf("【性能】%.0f 帧 / %.1fs = %.1f fps | 渲染 %.1fms/s | "+
-				"轮询 %.1fms/s | 采样 %.1fms/s | 忙 %.1fms/s（单核约 %.1f%%）",
-				n, sec, n/sec,
-				float64(perfRender.Microseconds())/1000/sec,
-				float64(perfPoll.Microseconds())/1000/sec,
-				float64(perfSample.Microseconds())/1000/sec,
-				float64(perfTotal.Microseconds())/1000/sec,
-				float64(perfTotal.Microseconds())/1000/sec/10)
-			log.Printf("【采样分解】(ms/s) CPU %.1f | 内存 %.1f | 网络 %.1f | 磁盘 %.1f",
-				float64(perfCPU.Microseconds())/1000/sec,
-				float64(perfMem.Microseconds())/1000/sec,
-				float64(perfNet.Microseconds())/1000/sec,
-				float64(perfDisk.Microseconds())/1000/sec)
-			perfFrames, perfRender, perfTotal = 0, 0, 0
-			perfPoll, perfSample = 0, 0
-			perfCPU, perfMem, perfNet, perfDisk = 0, 0, 0, 0
-			perfSince = time.Now()
-		}
 	}
 
-	cfg.Save()
+	logx.Println("R1 Toolbox 退出")
+}
+
+// dayNightText 当前昼夜状态的中文描述（仅用于启动日志）
+func dayNightText() string {
+	if ui.IsNight() {
+		return "夜间窗口"
+	}
+	return "日间"
 }

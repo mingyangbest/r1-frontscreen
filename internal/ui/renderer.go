@@ -2,8 +2,8 @@ package ui
 
 import (
 	"fmt"
-	"log"
 	"os"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -12,7 +12,9 @@ import (
 
 	"r1-toolbox/internal/config"
 	"r1-toolbox/internal/hardware"
+	"r1-toolbox/internal/logx"
 	"r1-toolbox/internal/monitor"
+	"r1-toolbox/internal/screen"
 )
 
 // ============================================================
@@ -48,7 +50,11 @@ type Renderer struct {
 	snapFrom *Sprite // 滑出的那一页（换页瞬间截下的当前画面）
 	snapTo   *Sprite // 滑入的那一页（滑动的第一帧渲染一次后截下）
 
-	screenOff bool
+	// screenOff 熄屏状态。
+	//
+	// 用原子而不是普通 bool：写它的是 Web 面板/触摸唤醒所在的协程，
+	// 读它的是渲染协程 —— -race 会把它算成 DATA RACE。
+	screenOff atomic.Bool
 
 	// ---- 局部重绘（见 damageRects）----
 	//
@@ -75,13 +81,13 @@ type Renderer struct {
 	// CPU 是 Σ(每帧耗时)，不是 帧率 × 平均耗时，
 	// 而全屏帧的次数是由**数据更新（每秒一次）与它引发的缓动**决定的，
 	// 跟帧率无关。所以这两条必须分开看才知道该优化哪一边。
-	perfDraw, perfBar, perfUp             time.Duration
-	perfLocalDraw, perfFullDraw           time.Duration
-	perfLocalUp, perfFullUp               time.Duration
-	perfN, perfLocalN, perfFullN          int
-	perfSkipN                             int // 跳帧数：内容没变、画布原样可信，整帧不画不上传
-	perfFullReason                        [5]int
-	perfSince                             time.Time
+	perfDraw, perfBar, perfUp    time.Duration
+	perfLocalDraw, perfFullDraw  time.Duration
+	perfLocalUp, perfFullUp      time.Duration
+	perfN, perfLocalN, perfFullN int
+	perfSkipN                    int // 跳帧数：内容没变、画布原样可信，整帧不画不上传
+	perfFullReason               [5]int
+	perfSince                    time.Time
 }
 
 const (
@@ -110,7 +116,7 @@ func (r *Renderer) pageAccent(i int) RGBA {
 	return pageAccents[i]
 }
 
-func NewRenderer(mon *monitor.SystemMonitor, fan *hardware.FanController, br *hardware.BrightnessController, webToken string) (*Renderer, error) {
+func NewRenderer(mon *monitor.SystemMonitor, fan *hardware.FanController, scr *screen.Control) (*Renderer, error) {
 	// 这台机器的 SDL 实际由 systemd 指定走 KMSDRM（SDL_VIDEODRIVER=kmsdrm），
 	// 因此下面的 SDL_FBDEV 并不生效，保留只是为了兼容可能存在的 fbdev 回退。
 	os.Setenv("SDL_FBDEV", "/dev/fb0")
@@ -122,14 +128,14 @@ func NewRenderer(mon *monitor.SystemMonitor, fan *hardware.FanController, br *ha
 		return nil, fmt.Errorf("TTF 初始化失败: %v", err)
 	}
 
-	log.Println("尝试创建 SDL 窗口...")
+	logx.Println("尝试创建 SDL 窗口...")
 	window, err := sdl.CreateWindow("R1 Toolbox", 0, 0,
 		config.ScreenWidth, config.ScreenHeight, sdl.WINDOW_SHOWN)
 	if err != nil {
 		return nil, fmt.Errorf("创建窗口失败: %v", err)
 	}
 
-	log.Println("创建渲染器...")
+	logx.Println("创建渲染器...")
 	ren, err := sdl.CreateRenderer(window, -1, sdl.RENDERER_SOFTWARE)
 	if err != nil {
 		return nil, fmt.Errorf("创建渲染器失败: %v", err)
@@ -150,18 +156,18 @@ func NewRenderer(mon *monitor.SystemMonitor, fan *hardware.FanController, br *ha
 	// 于是没人去挪它，箭头就一直钉在屏幕左上角（而且它画在 DRM cursor plane 上，
 	// 不在主 framebuffer 里，所以直接 dd /dev/fb0 是看不到的）。
 	if _, err := sdl.ShowCursor(sdl.DISABLE); err != nil {
-		log.Printf("隐藏鼠标指针失败: %v", err)
+		logx.Printf("隐藏鼠标指针失败: %v", err)
 	} else {
-		log.Println("已隐藏鼠标指针")
+		logx.Println("已隐藏鼠标指针")
 	}
 
 	fs := NewFontSet()
 	if fs.Path() == "" {
-		log.Println("警告: 未找到任何可用字体，文字将不显示")
-	} else {
-		log.Printf("成功加载字体: %s", fs.Path())
-		log.Printf("拉丁字体: %s", fs.LatinPath())
+		// 缺字体的后果是整屏文字静默消失、只剩色块 —— 比直接退出更难排查。
+		// 这里返回 error，main 会 log.Fatal 并把探测过的路径打出来。
+		return nil, fmt.Errorf("未找到可用的中文字体（已探测 %v）", cjkSearchPaths)
 	}
+	logx.Printf("字体: %s（拉丁 %s）", fs.Path(), fs.LatinPath())
 
 	r := &Renderer{
 		window: window,
@@ -178,18 +184,18 @@ func NewRenderer(mon *monitor.SystemMonitor, fan *hardware.FanController, br *ha
 	r.Ctx.Theme = r.theme
 	r.Ctx.Mon = mon
 	r.Ctx.Fan = fan
-	r.Ctx.Bright = br
+	r.Ctx.Screen = scr
 
 	// 页面顺序（Material You 三页版，2026-10-28 洋哥拍板）：环境 → 详情 → 系统。
 	// 旧五页（概览/CPU内存/硬盘/网络/系统）已被 pages_m3.go 的三页取代。
 	r.pages = []Page{
 		NewEnvPage(mon),
 		NewDetailPage(mon),
-		NewSysPage(mon, br),
+		NewSysPage(mon, scr),
 	}
 
 	r.rebuildBackground()
-	log.Println("SDL2 渲染器初始化成功")
+	logx.Println("SDL2 渲染器初始化成功")
 	return r, nil
 }
 
@@ -208,7 +214,7 @@ func (r *Renderer) rebuildBackground() {
 //  页面管理
 // ------------------------------------------------------------
 
-func (r *Renderer) PageCount() int  { return len(r.pages) }
+func (r *Renderer) PageCount() int    { return len(r.pages) }
 func (r *Renderer) CurrentIndex() int { return r.cur }
 func (r *Renderer) CurrentPage() Page { return r.pages[r.cur] }
 func (r *Renderer) PageAt(i int) Page {
@@ -240,7 +246,7 @@ func (r *Renderer) SwitchPage(dir int) {
 	// 此刻画布上还是"旧页的完整一帧"（上一步渲染留下的），直接截下来复用。
 	r.snapFrom = r.Canvas.Snapshot(0, clipTop, r.Canvas.W, clipBot-clipTop)
 	r.snapTo = nil
-	log.Printf("【页面切换】%d -> %d (dir=%d)", r.animFrom, r.animTo, dir)
+	logx.Debugf("【页面切换】%d -> %d (dir=%d)", r.animFrom, r.animTo, dir)
 }
 
 // Animating 是否正在切换动画
@@ -277,7 +283,7 @@ func (r *Renderer) SetTheme(name string) {
 	r.rebuildBackground()
 	// 背景底图换了，画布上现有的像素全部作废
 	r.needFull = true
-	log.Printf("【主题】切换为 %s", r.theme.Name)
+	logx.Printf("【主题】切换为 %s", r.theme.Name)
 }
 
 func (r *Renderer) Theme() *Theme { return r.theme }
@@ -297,12 +303,15 @@ func (r *Renderer) NextTheme() string {
 	return names[0]
 }
 
-// SetScreenOff 设置熄屏状态
+// SetScreenOff 设置熄屏状态（可由任意协程调用）
 func (r *Renderer) SetScreenOff(off bool) {
-	r.screenOff = off
+	r.screenOff.Store(off)
 	// 关屏时画布被整屏涂黑、唤醒后内容全不可信
 	r.needFull = true
 }
+
+// ScreenOff 当前是否熄屏
+func (r *Renderer) ScreenOff() bool { return r.screenOff.Load() }
 
 // ------------------------------------------------------------
 //  绘制
@@ -327,7 +336,7 @@ func (r *Renderer) Render(d *DrawCtx) {
 	c := r.Canvas
 	tDraw := time.Now()
 
-	if r.screenOff {
+	if r.screenOff.Load() {
 		c.Reset()
 		c.SetOffset(0, 0)
 		c.ClearClip()
@@ -356,8 +365,8 @@ func (r *Renderer) Render(d *DrawCtx) {
 		// 旧页滑出 k 像素，新页就从 w-k 处开始滑入，接口正好落在 w-k。
 		var dxFrom, dxTo int
 		if r.animDir > 0 {
-			dxFrom = -int(float64(w) * e)     // 旧页向左滑出
-			dxTo = int(float64(w) * (1 - e))  // 新页自右侧滑入
+			dxFrom = -int(float64(w) * e)    // 旧页向左滑出
+			dxTo = int(float64(w) * (1 - e)) // 新页自右侧滑入
 		} else {
 			dxFrom = int(float64(w) * e)      // 旧页向右滑出
 			dxTo = -int(float64(w) * (1 - e)) // 新页自左侧滑入
@@ -403,7 +412,7 @@ func (r *Renderer) Render(d *DrawCtx) {
 		r.drawPageBody(r.pages[r.cur], d, 1, 0)
 		if r.animN > 0 {
 			// 一条可核对的滑动流畅度记录：0.38s / 帧数 ≈ 实际帧率
-			log.Printf("【换页】%d→%d 共 %d 帧 (%.2fs ≈ %.0ffps)",
+			logx.Debugf("【换页】%d→%d 共 %d 帧 (%.2fs ≈ %.0ffps)",
 				r.animFrom, r.animTo, r.animN, sliceDur,
 				float64(r.animN)/sliceDur)
 			r.animN = 0
@@ -534,7 +543,7 @@ func (r *Renderer) Render(d *DrawCtx) {
 		msLocal := float64(r.perfLocalDraw.Microseconds()) / 1000 / el
 		msFull := float64(r.perfFullDraw.Microseconds()) / 1000 / el
 		msUp := float64(r.perfUp.Microseconds()) / 1000 / el
-		log.Printf("【渲染分解】%.0f 帧（局部 %d / 全屏 %d / 跳过 %d）= %.1f+%.1f fps | "+
+		logx.Debugf("【渲染分解】%.0f 帧（局部 %d / 全屏 %d / 跳过 %d）= %.1f+%.1f fps | "+
 			"局部帧 %.2fms/帧 共 %.1fms/s | 全屏帧 %.2fms/帧 共 %.1fms/s | 顶栏 %.1fms/s | 上传 %.1fms/s | 全屏出口 needFull %d 天气 %d 数据 %d 空矩形 %d 分钟 %d",
 			n, r.perfLocalN, r.perfFullN, r.perfSkipN,
 			float64(r.perfLocalN)/el, float64(r.perfFullN)/el,
@@ -671,7 +680,7 @@ func (r *Renderer) drawPageBody(p Page, d *DrawCtx, alpha float64, dx int) {
 
 func (r *Renderer) upload() {
 	if err := r.tex.Update(nil, unsafe.Pointer(&r.Canvas.Pix[0]), r.Canvas.W*4); err != nil {
-		log.Printf("纹理上传失败: %v", err)
+		logx.Printf("纹理上传失败: %v", err)
 		return
 	}
 	r.ren.Copy(r.tex, nil, nil)
@@ -711,12 +720,12 @@ func (r *Renderer) uploadPartial(rects []Rect) {
 		}
 		sr := sdl.Rect{X: int32(x), Y: int32(y), W: int32(w), H: int32(h)}
 		if err := r.tex.Update(&sr, unsafe.Pointer(&c.Pix[(y*c.W+x)<<2]), pitch); err != nil {
-			log.Printf("局部纹理上传失败，退回整屏: %v", err)
+			logx.Printf("局部纹理上传失败，退回整屏: %v", err)
 			r.upload()
 			return
 		}
 		if err := r.ren.Copy(r.tex, &sr, &sr); err != nil {
-			log.Printf("局部呈现失败，退回整屏: %v", err)
+			logx.Printf("局部呈现失败，退回整屏: %v", err)
 			r.upload()
 			return
 		}
@@ -777,11 +786,9 @@ func (r *Renderer) Cleanup() {
 }
 
 // ------------------------------------------------------------
-//  兼容旧 Web 控制面板的接口
+//  旧的 Web 面板兼容接口已移除（2026-10-28）
+//
+// SetTextColor / LoadBackground 都是空实现，而对应的 /api/textcolor、
+// /api/background 路由仍然挂着 —— 等于留了一个「能往 /etc 写文件、
+// 界面毫无反应」的入口。新 UI 用内置渐变背景与主题配色，直接删掉。
 // ------------------------------------------------------------
-
-// SetTextColor 兼容旧接口（新 UI 使用主题配色，此处仅记录）
-func (r *Renderer) SetTextColor(hex string) {}
-
-// LoadBackground 兼容旧接口（新 UI 使用内置渐变背景）
-func (r *Renderer) LoadBackground(path string) error { return nil }

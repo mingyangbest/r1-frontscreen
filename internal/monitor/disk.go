@@ -1,9 +1,7 @@
 package monitor
 
 import (
-	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -13,6 +11,18 @@ import (
 	"time"
 
 	"github.com/shirou/gopsutil/v3/disk"
+
+	"r1-toolbox/internal/execx"
+	"r1-toolbox/internal/logx"
+)
+
+// 外部命令超时。smartctl 正常 10~40ms、lsblk 5~15ms，给足余量。
+//
+// 为什么必须带超时：一块半死的 SATA 盘会让 smartctl 卡在 D 状态几十秒，
+// 旧实现把整条采样链一起拖死（采样当时还在渲染线程里）。
+const (
+	smartctlTimeout = 5 * time.Second
+	lsblkTimeout    = 3 * time.Second
 )
 
 // DiskMonitor 采集存储卷信息。
@@ -121,11 +131,14 @@ func (d *DiskMonitor) Update() error {
 	})
 
 	// 审计日志：每 60 秒一条，把原始字节数落盘，
-	// 屏幕上的百分比随时可以在 journalctl 里与 `df -B1` 逐条对账。
-	for _, v := range vols {
-		log.Printf("[disk] %s (%s @ %s) used=%d total=%d = %.2f/%.2f GB  %.2f%%  %s",
-			v.VolName, v.BaseDevice, v.Mount, v.UsedBytes, v.TotalBytes,
-			v.UsedGB, v.TotalGB, v.UsedPercent, v.DeviceType)
+	// 屏幕上的百分比随时可以在 journalctl（R1_DEBUG=1）里与 `df -B1` 逐条对账。
+	// 走 Debugf：设备常亮时这条日志一天能刷满 160MB，把真正的事故记录冲掉。
+	if logx.DebugEnabled() {
+		for _, v := range vols {
+			logx.Debugf("[disk] %s (%s @ %s) used=%d total=%d = %.2f/%.2f GB  %.2f%%  %s",
+				v.VolName, v.BaseDevice, v.Mount, v.UsedBytes, v.TotalBytes,
+				v.UsedGB, v.TotalGB, v.UsedPercent, v.DeviceType)
+		}
 	}
 
 	d.mu.Lock()
@@ -298,7 +311,7 @@ func diskTemp(base string) float64 {
 	}
 	smartTempMu.Unlock()
 
-	out, err := exec.Command("smartctl", "-A", "/dev/"+base).Output()
+	out, err := execx.Run(smartctlTimeout, "smartctl", "-A", "/dev/"+base)
 	if err != nil {
 		return 0
 	}
@@ -331,7 +344,7 @@ func parseSmartTemp(out string) float64 {
 
 // readLabel 读分区真实卷标（无卷标返回空串）
 func readLabel(device string) string {
-	out, err := exec.Command("lsblk", "-no", "LABEL", device).Output()
+	out, err := execx.Run(lsblkTimeout, "lsblk", "-no", "LABEL", device)
 	if err != nil {
 		return ""
 	}

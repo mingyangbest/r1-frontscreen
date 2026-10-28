@@ -29,7 +29,14 @@ import (
 //     15.4 GiB，核显 stolen + 固件预留吃掉了 0.6 GiB），MemPhysGB 才是商品页
 //     写的物理安装容量（读 SMBIOS type 17）。百分比只能拿 MemTotalGB 当分母，
 //     否则 43% 对不上 已用/总量。
+//
+// 并发模型（2026-10-28 重构）：采样在独立 goroutine（见 sampler.go），
+// 渲染与 Web 各自调 Snapshot() 拿**值拷贝**。所有字段都在 mu 保护下，
+// 不存在「一个协程写、另一个协程读」的裸访问 —— -race 实测的
+// 7 处 DATA RACE 里，属于本类型的部分由此归零。
 type SystemMonitor struct {
+	mu sync.RWMutex
+
 	CPUPercent float64
 	CPUCores   []float64
 	CPUCoreNum int
@@ -60,7 +67,7 @@ type SystemMonitor struct {
 	LocalIP string
 
 	// 系统
-	UptimeSec float64   // /proc/uptime，系统开机至今秒数
+	UptimeSec float64 // /proc/uptime，系统开机至今秒数
 	LoadAvg   [3]float64
 	ProcCount int // 系统当前进程总数
 
@@ -70,10 +77,122 @@ type SystemMonitor struct {
 
 	Disk *DiskMonitor
 
+	// 数据新鲜度：最近一次成功采样的时刻。界面用它显示「更新于 xx:xx:xx」，
+	// 采样协程挂掉时用户能看出来，而不是盯着一屏永远不变的数字。
+	updatedAt time.Time
+
 	lastRx, lastTx uint64
 	lastNetTime    time.Time
 
 	day *netDayState // 当日流量的起算基线
+}
+
+// Snapshot 某一时刻的完整读数（值拷贝，可安全跨协程传阅）。
+//
+// 字段名与 SystemMonitor 一一对应，页面的绘制代码只需把 p.mon 换成
+// p.mon.Snapshot()，其余读法完全不变 —— 这样重构不会碰到任何排版坐标。
+type Snapshot struct {
+	CPUPercent float64
+	CPUCores   []float64
+	CPUCoreNum int
+	CPUTemp    float64
+	CPUHistory []float64
+
+	MemPercent  float64
+	MemUsedGB   float64
+	MemTotalGB  float64
+	MemPhysGB   float64
+	MemAvailGB  float64
+	MemHistory  []float64
+	MemCacheGB  float64
+	SwapPercent float64
+	SwapUsedGB  float64
+	SwapTotalGB float64
+
+	NetIface    string
+	NetSendMBps float64
+	NetRecvMBps float64
+	NetRxTotal  uint64
+	NetTxTotal  uint64
+	NetRxToday  uint64
+	NetTxToday  uint64
+	NetHistory  [][2]float64
+	LocalIP     string
+
+	UptimeSec float64
+	LoadAvg   [3]float64
+	ProcCount int
+
+	ContainersRunning int
+	ContainersTotal   int
+
+	// Disk 是共享子监控，自身带锁；快照里保留指针即可。
+	Disk *DiskMonitor
+
+	// UpdatedAt 本快照的数据采集时刻
+	UpdatedAt time.Time
+}
+
+// Snapshot 取一份值拷贝。切片深拷贝，调用方拿到后不会被下一次采样改写。
+func (s *SystemMonitor) Snapshot() Snapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return Snapshot{
+		CPUPercent: s.CPUPercent,
+		CPUCores:   cloneFloats(s.CPUCores),
+		CPUCoreNum: s.CPUCoreNum,
+		CPUTemp:    s.CPUTemp,
+		CPUHistory: cloneFloats(s.CPUHistory),
+
+		MemPercent:  s.MemPercent,
+		MemUsedGB:   s.MemUsedGB,
+		MemTotalGB:  s.MemTotalGB,
+		MemPhysGB:   s.MemPhysGB,
+		MemAvailGB:  s.MemAvailGB,
+		MemHistory:  cloneFloats(s.MemHistory),
+		MemCacheGB:  s.MemCacheGB,
+		SwapPercent: s.SwapPercent,
+		SwapUsedGB:  s.SwapUsedGB,
+		SwapTotalGB: s.SwapTotalGB,
+
+		NetIface:    s.NetIface,
+		NetSendMBps: s.NetSendMBps,
+		NetRecvMBps: s.NetRecvMBps,
+		NetRxTotal:  s.NetRxTotal,
+		NetTxTotal:  s.NetTxTotal,
+		NetRxToday:  s.NetRxToday,
+		NetTxToday:  s.NetTxToday,
+		NetHistory:  clonePairs(s.NetHistory),
+		LocalIP:     s.LocalIP,
+
+		UptimeSec: s.UptimeSec,
+		LoadAvg:   s.LoadAvg,
+		ProcCount: s.ProcCount,
+
+		ContainersRunning: s.ContainersRunning,
+		ContainersTotal:   s.ContainersTotal,
+
+		Disk:      s.Disk,
+		UpdatedAt: s.updatedAt,
+	}
+}
+
+func cloneFloats(in []float64) []float64 {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]float64, len(in))
+	copy(out, in)
+	return out
+}
+
+func clonePairs(in [][2]float64) [][2]float64 {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([][2]float64, len(in))
+	copy(out, in)
+	return out
 }
 
 func NewSystemMonitor() *SystemMonitor {
@@ -86,7 +205,21 @@ func NewSystemMonitor() *SystemMonitor {
 }
 
 func (s *SystemMonitor) UpdateCPU() error {
+	// ---- 锁外采集 ----
+	// gopsutil 的 cpu.Percent 要读 /proc/stat、getCPUTempFromFile 最多读
+	// 20 个 hwmon 文件、countProcesses 要遍历 /proc。这些加起来 3~8ms，
+	// 全程占着写锁会让渲染的 Snapshot() 一起等 —— 触摸就卡了。
 	percent, _ := cpu.Percent(0, false)
+	cores, _ := cpu.Percent(0, true)
+	n, _ := cpu.Counts(true)
+	temp := s.getCPUTempFromFile()
+	up := readUptime()
+	la, _ := readLoadAvg()
+	procs := countProcesses()
+
+	// ---- 锁内只做赋值，微秒级 ----
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if len(percent) > 0 {
 		s.CPUPercent = percent[0]
 		s.CPUHistory = append(s.CPUHistory, percent[0])
@@ -96,21 +229,21 @@ func (s *SystemMonitor) UpdateCPU() error {
 	}
 
 	// 首次采样可能返回空（没有上一帧基线），不要用空结果覆盖已有的核心数
-	if cores, _ := cpu.Percent(0, true); len(cores) > 0 {
+	if len(cores) > 0 {
 		s.CPUCores = cores
 	}
-	if n, err := cpu.Counts(true); err == nil && n > 0 {
+	if n > 0 {
 		s.CPUCoreNum = n
 	}
 
 	// Go 1.19 的 gopsutil 没有 Temperature()，使用文件读取
-	s.CPUTemp = s.getCPUTempFromFile()
-
-	s.UptimeSec = readUptime()
-	s.LoadAvg, _ = readLoadAvg()
+	s.CPUTemp = temp
+	s.UptimeSec = up
+	s.LoadAvg = la
 	// 注意：/proc/loadavg 第四列的总数是「内核任务数」（含线程），
 	// 明显大于真实进程数（实测 1240 vs 376）。要显示「进程」就必须数 /proc 里的 PID 目录。
-	s.ProcCount = countProcesses()
+	s.ProcCount = procs
+	s.updatedAt = time.Now()
 	return nil
 }
 
@@ -207,7 +340,9 @@ func (s *SystemMonitor) getCPUTempFromFile() float64 {
 }
 
 // ------------------------------------------------------------
-//  物理安装内存（SMBIOS type 17）
+//
+//	物理安装内存（SMBIOS type 17）
+//
 // ------------------------------------------------------------
 //
 // 为什么不能只看 /proc/meminfo：MemTotal 是「内核能用的内存」，核显 stolen
@@ -218,9 +353,11 @@ func (s *SystemMonitor) getCPUTempFromFile() float64 {
 // 注意：SMBIOS 规范里的字段偏移是**从结构首字节算起**（type/len/handle 占
 // 0x00~0x03 也算在内），不是从 formatted area 算 —— 这点搞错会读到
 // 0x0201=513 MB 这种鬼数字（本机第一版就是踩了这个坑，界面显示「物理 1 GB」）：
-//   0x00  type(=17)   0x01  length   0x02~0x03  handle
-//   0x0C  Size uint16（MB；0=空插槽；0xFFFF=见扩展字段）
-//   0x1C  Extended Size uint32（MB）
+//
+//	0x00  type(=17)   0x01  length   0x02~0x03  handle
+//	0x0C  Size uint16（MB；0=空插槽；0xFFFF=见扩展字段）
+//	0x1C  Extended Size uint32（MB）
+//
 // 读不到（非 x86 / 权限不足 / SMBIOS 未导出）返回 0，界面自行降级，绝不编造。
 var (
 	physMemOnce sync.Once
@@ -269,6 +406,9 @@ func (s *SystemMonitor) UpdateMemory() error {
 	if err != nil {
 		return err
 	}
+	swap, swapErr := mem.SwapMemory()
+	phys := physicalMemGB()
+
 	total := float64(v.Total)
 	avail := float64(v.Available)
 	// 用「总 - 可用」作为已用，保证 已用 + 可用 == 总容量
@@ -276,16 +416,20 @@ func (s *SystemMonitor) UpdateMemory() error {
 	if used < 0 {
 		used = 0
 	}
-
-	s.MemTotalGB = total / (1024 * 1024 * 1024)
-	s.MemPhysGB = physicalMemGB()
-	s.MemAvailGB = avail / (1024 * 1024 * 1024)
-	s.MemUsedGB = used / (1024 * 1024 * 1024)
+	pct := 0.0
 	if total > 0 {
-		s.MemPercent = used / total * 100
+		pct = used / total * 100
 	}
 
-	s.MemHistory = append(s.MemHistory, s.MemPercent)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.MemTotalGB = total / (1024 * 1024 * 1024)
+	s.MemPhysGB = phys
+	s.MemAvailGB = avail / (1024 * 1024 * 1024)
+	s.MemUsedGB = used / (1024 * 1024 * 1024)
+	s.MemPercent = pct
+
+	s.MemHistory = append(s.MemHistory, pct)
 	if len(s.MemHistory) > 30 {
 		s.MemHistory = s.MemHistory[1:]
 	}
@@ -293,11 +437,12 @@ func (s *SystemMonitor) UpdateMemory() error {
 	// buff/cache 是内核页缓存，来自 /proc/meminfo 的真实读数
 	s.MemCacheGB = float64(v.Buffers+v.Cached) / (1024 * 1024 * 1024)
 
-	if swap, err := mem.SwapMemory(); err == nil {
+	if swapErr == nil {
 		s.SwapPercent = swap.UsedPercent
 		s.SwapUsedGB = float64(swap.Used) / (1024 * 1024 * 1024)
 		s.SwapTotalGB = float64(swap.Total) / (1024 * 1024 * 1024)
 	}
+	s.updatedAt = time.Now()
 	return nil
 }
 
@@ -307,6 +452,11 @@ func (s *SystemMonitor) UpdateMemory() error {
 // 同一份流量会同时记在物理口和桥上；再加上 docker0 / br-* 的容器流量，
 // 聚合后速率会明显高于真实外网速率。
 func (s *SystemMonitor) UpdateNetwork() error {
+	// 两次 sysfs 读 + 一次 netlink 查询，合计 <2ms，且 2 秒才有一次。
+	// 这里整段持写锁，不拆「锁外采集」—— 拆了反而要额外同步 lastRx/lastTx。
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.NetIface == "" {
 		s.NetIface = defaultRouteIface()
 		if s.NetIface == "" {
@@ -348,6 +498,7 @@ func (s *SystemMonitor) UpdateNetwork() error {
 
 	s.lastNetTime, s.lastRx, s.lastTx = now, rx, tx
 	s.NetRxTotal, s.NetTxTotal = rx, tx
+	s.updatedAt = time.Now()
 	return nil
 }
 

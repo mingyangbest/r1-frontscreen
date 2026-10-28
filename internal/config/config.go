@@ -1,8 +1,11 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -13,12 +16,11 @@ const (
 	FrameRate    = 25
 )
 
-func getConfigPath() string {
-	// 优先使用飞牛NAS环境变量
+// ConfigPath 配置文件位置。优先飞牛 NAS 的 TRIM_PKGETC，其次固定路径。
+func ConfigPath() string {
 	if pkgEtc := os.Getenv("TRIM_PKGETC"); pkgEtc != "" {
 		return filepath.Join(pkgEtc, "config.yaml")
 	}
-	// 备用路径
 	return "/etc/r1-toolbox/config.yaml"
 }
 
@@ -28,12 +30,14 @@ type Config struct {
 	Fan      FanConfig      `yaml:"fan"`
 	Web      WebConfig      `yaml:"web"`
 	Hardware HardwareConfig `yaml:"hardware"`
+	// Debug 打开明细日志（性能/采样审计）。默认关 —— 见 internal/logx。
+	Debug bool `yaml:"debug"`
 }
 
 type ScreenConfig struct {
-	Width      int    `yaml:"width"`
-	Height     int    `yaml:"height"`
-	Brightness int    `yaml:"brightness"`
+	Width      int `yaml:"width"`
+	Height     int `yaml:"height"`
+	Brightness int `yaml:"brightness"`
 	// NightBrightness 夜间（18:00–06:00，与天气图标同一窗口）自动调暗后的
 	// 背光值，0 = 关闭夜间调暗。只在昼夜切换瞬间生效，不覆盖手动调节。
 	NightBrightness int    `yaml:"night_brightness"`
@@ -67,8 +71,8 @@ type WebConfig struct {
 	Enabled bool `yaml:"enabled"`
 	Port    int  `yaml:"port"`
 	// Token 面板访问令牌。为空时 main 启动会自动生成并回写到这里；
-	// 所有 /api/* 接口要求请求携带该令牌（X-Token 头或 token 查询参数）。
-	// 令牌同时打印到启动日志并显示在屏幕「系统」页 —— 物理接触设备即授权。
+	// 所有 /api/* 接口要求请求携带 X-Token 头。
+	// 令牌只在启动日志打印一次并显示在屏幕「系统」页 —— 物理接触设备即授权。
 	Token string `yaml:"token"`
 }
 
@@ -78,64 +82,203 @@ type HardwareConfig struct {
 	Framebuffer    string `yaml:"framebuffer"`
 }
 
-func Load() (*Config, error) {
-	configPath := getConfigPath()
-	data, err := os.ReadFile(configPath)
+// Load 从默认路径读取配置。文件不存在返回默认值，格式损坏返回 error
+// （调用方必须把 error 打出来 —— 静默回落默认值会让用户的亮度、
+// 夜间亮度、风扇曲线在毫无提示的情况下全部丢失）。
+func Load() (*Config, error) { return LoadFrom(ConfigPath()) }
+
+// LoadFrom 从指定路径读取配置
+func LoadFrom(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return DefaultConfig(), nil
+		if errors.Is(err, os.ErrNotExist) {
+			return DefaultConfig(), nil
+		}
+		return DefaultConfig(), fmt.Errorf("读取配置 %s: %w", path, err)
 	}
-	
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, err
+		return DefaultConfig(), fmt.Errorf("解析配置 %s: %w", path, err)
 	}
 	return &cfg, nil
 }
 
-// Save 把当前配置写回磁盘。
+// ============================================================
+//  Store —— 配置的唯一可变持有者
 //
-// G2 修复（2026-09-27）：旧实现 yaml.Marshal 整文件覆盖，用户手写的
-// 注释全部丢失。新实现把新值合并进旧文件的语法树（yaml.Node）：
-// 键序、行注释、引号风格原样保留，仅标量值被更新；新版本新增的
-// 字段会被追加到对应小节末尾（头注释随新字段一起带入）。
+// 修复的竞态（-race 实锤，2026-10-28）：一个 HTTP handler 往
+// cfg.Screen.Brightness 写值，另一个 handler 的 Save() 正把结构体
+// 序列化出去；同时主循环的热重载也在写。三方无锁。
 //
-// 三重兜底，任何一步不满足都退回旧的整文件写出（宁丢注释不丢数据）：
-//   - 旧文件读不到（首次写）→ 整文件写出；
-//   - 旧文件不是合法 YAML 映射文档（损坏）→ 整文件写出；
-//   - 合并结果序列化失败 → 整文件写出。
-func (c *Config) Save() error {
-	configPath := getConfigPath()
+// 现在所有读写都必须经过 Store：
+//   - Get() 返回**值拷贝**，调用方随便用，不影响内部状态
+//   - Update(fn) 在写锁里改，改完立刻以快照落盘
+//   - 落盘串行化（saveMu），并发 Update 不会互相覆盖
+// ============================================================
 
+type Store struct {
+	mu    sync.RWMutex
+	path  string
+	cur   Config
+	saveM sync.Mutex
+}
+
+// NewStore 读取配置并返回线程安全的持有者。读失败不返回 error ——
+// 设备上配置文件损坏时屏幕必须还能亮，用默认值启动并把错误带走。
+func NewStore(path string) (*Store, error) {
+	cfg, err := LoadFrom(path)
+	s := &Store{path: path}
+	if cfg != nil {
+		s.cur = *cfg
+	} else {
+		s.cur = *DefaultConfig()
+	}
+	return s, err
+}
+
+// Get 返回当前配置的值拷贝（Config 全是值类型与 string，浅拷贝即安全）
+func (s *Store) Get() Config {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cur
+}
+
+// Update 在写锁内修改配置，随后把快照落盘。
+// mutate 里不要做 IO、不要调用 Store 的任何方法（会自锁）。
+func (s *Store) Update(mutate func(*Config)) error {
+	s.mu.Lock()
+	if mutate != nil {
+		mutate(&s.cur)
+	}
+	snap := s.cur
+	s.mu.Unlock()
+
+	s.saveM.Lock()
+	defer s.saveM.Unlock()
+	return SaveTo(s.path, &snap)
+}
+
+// Save 把当前配置落盘
+func (s *Store) Save() error {
+	s.mu.RLock()
+	snap := s.cur
+	s.mu.RUnlock()
+
+	s.saveM.Lock()
+	defer s.saveM.Unlock()
+	return SaveTo(s.path, &snap)
+}
+
+// Replace 用外部读到的新配置整体替换（热重载用）。
+//
+// 只替换「主循环关心且允许热改」的字段，不碰 Web 令牌等运行期状态，
+// 否则热重载会把刚生成的令牌冲掉。
+func (s *Store) Replace(fresh Config) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cur.Screen.Brightness = fresh.Screen.Brightness
+	s.cur.Screen.NightBrightness = fresh.Screen.NightBrightness
+	s.cur.Screen.Timeout = fresh.Screen.Timeout
+	s.cur.Debug = fresh.Debug
+}
+
+// Path 配置文件路径
+func (s *Store) Path() string { return s.path }
+
+// ============================================================
+//  落盘
+// ============================================================
+
+// Save 把当前配置写回默认路径（保留旧文件注释与键序）
+func (c *Config) Save() error { return SaveTo(ConfigPath(), c) }
+
+// SaveTo 把配置写回指定路径。
+//
+// 旧实现是 os.WriteFile 直接截断覆盖，两个后果：
+//  1. 写到一半被杀/断电 → 文件只剩半截 YAML，下次启动解析失败；
+//  2. 并发保存互相覆盖（已由 Store.saveM 收口）。
+//
+// 现在写临时文件 + fsync + rename + 目录 fsync：rename 在同一文件系统内
+// 是原子的，任何时刻磁盘上要么是旧文件、要么是完整的新文件。
+//
+// 注释合并逻辑保留（2026-09-27 的 G2 修复）：把新值合并进旧文件的
+// yaml.Node 语法树，键序、行注释、引号风格原样保留。
+func SaveTo(path string, c *Config) error {
 	fresh, err := yaml.Marshal(c)
 	if err != nil {
 		return err
 	}
 
-	old, err := os.ReadFile(configPath)
+	old, err := os.ReadFile(path)
 	if err != nil || len(old) == 0 {
-		return os.WriteFile(configPath, fresh, 0644)
+		return WriteFileAtomic(path, fresh)
 	}
 
 	var dst yaml.Node
 	if err := yaml.Unmarshal(old, &dst); err != nil ||
 		dst.Kind != yaml.DocumentNode || len(dst.Content) == 0 ||
 		dst.Content[0].Kind != yaml.MappingNode {
-		return os.WriteFile(configPath, fresh, 0644)
+		return WriteFileAtomic(path, fresh)
 	}
 
 	var src yaml.Node
 	if err := yaml.Unmarshal(fresh, &src); err != nil ||
 		len(src.Content) == 0 || src.Content[0].Kind != yaml.MappingNode {
-		return os.WriteFile(configPath, fresh, 0644)
+		return WriteFileAtomic(path, fresh)
 	}
 
 	mergeMappingNode(src.Content[0], dst.Content[0])
 
 	out, err := yaml.Marshal(&dst)
 	if err != nil {
-		return os.WriteFile(configPath, fresh, 0644)
+		return WriteFileAtomic(path, fresh)
 	}
-	return os.WriteFile(configPath, out, 0644)
+	return WriteFileAtomic(path, out)
+}
+
+// WriteFileAtomic 原子写：同目录临时文件 → fsync → rename → fsync 目录。
+//
+// rename 之后即使掉电，文件系统要么指向旧 inode、要么指向完整的新 inode，
+// 不会出现「半截 YAML」。目录 fsync 保证 rename 本身已落盘。
+func WriteFileAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	cleanup := func() {
+		f.Close()
+		os.Remove(tmp)
+	}
+	if _, err := f.Write(data); err != nil {
+		cleanup()
+		return err
+	}
+	if err := f.Chmod(0644); err != nil {
+		cleanup()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if d, err := os.Open(dir); err == nil {
+		d.Sync() // 目录项落盘；失败不影响本次写入（有的文件系统不支持）
+		d.Close()
+	}
+	return nil
 }
 
 // mergeMappingNode 把 src 映射里的值合并进 dst 映射（保留 dst 的键序、
@@ -187,4 +330,3 @@ func DefaultConfig() *Config {
 		},
 	}
 }
-

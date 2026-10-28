@@ -10,12 +10,13 @@ package netinfo
 import (
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"r1-toolbox/internal/logx"
 )
 
 const (
@@ -61,7 +62,11 @@ type PublicIP struct {
 	City     string // 苏州
 	ISP      string // 联通
 	OK       bool
-	At       time.Time
+	At       time.Time // 最后一次成功获取的时刻
+	// TriedAt 最后一次**尝试**的时刻（成功或失败都会更新）。
+	// 界面靠它区分「还在获取中」与「获取失败」：
+	// 失败时 OK=false 但 TriedAt 非零，就该显示「获取失败」而不是永远「获取中」。
+	TriedAt time.Time
 }
 
 // Service 外网信息缓存 + 定时刷新
@@ -133,15 +138,22 @@ func (s *Service) get(url string) ([]byte, error) {
 // ------------------------------------------------------------
 
 func (s *Service) refreshIP() bool {
+	// 无论成败都记下尝试时刻：界面据此把「获取中」切成「获取失败」
+	defer func() {
+		s.mu.Lock()
+		s.p.TriedAt = time.Now()
+		s.mu.Unlock()
+	}()
+
 	b, err := s.get(ipURL)
 	if err != nil {
-		log.Printf("[netinfo] 公网IP 获取失败: %v", err)
+		logx.Debugf("[netinfo] 公网IP 获取失败: %v", err)
 		return false
 	}
 	body := string(b)
 	ip := findIPv4(body)
 	if ip == "" {
-		log.Printf("[netinfo] 公网IP 解析失败: %q", truncate(body, 120))
+		logx.Debugf("[netinfo] 公网IP 解析失败: %q", truncate(body, 120))
 		return false
 	}
 	loc, isp := "", ""
@@ -162,7 +174,7 @@ func (s *Service) refreshIP() bool {
 	s.mu.Lock()
 	s.p = PublicIP{IP: ip, Location: strings.TrimSpace(loc), City: city, ISP: isp, OK: true, At: time.Now()}
 	s.mu.Unlock()
-	log.Printf("[netinfo] 公网IP: %s  (%s %s)", ip, loc, isp)
+	logx.Debugf("[netinfo] 公网IP: %s  (%s %s)", ip, loc, isp)
 	return true
 }
 
@@ -210,7 +222,7 @@ func (s *Service) refreshWeather() bool {
 		s.storeWeather(w)
 		return true
 	}
-	log.Printf("[netinfo] 天气获取失败（两个数据源均不可用）")
+	logx.Debugf("[netinfo] 天气获取失败（两个数据源均不可用）")
 	return false
 }
 
@@ -232,7 +244,7 @@ func (s *Service) storeWeather(w Weather) {
 	s.mu.Lock()
 	s.w = w
 	s.mu.Unlock()
-	log.Printf("[netinfo] 天气[%s]: %s %.0f°C 今日%.0f~%.0f°C 湿度%d%% (%s) @%s",
+	logx.Debugf("[netinfo] 天气[%s]: %s %.0f°C 今日%.0f~%.0f°C 湿度%d%% (%s) @%s",
 		w.Src, w.Desc, w.TempC, w.MinC, w.MaxC, w.Humidity, w.Kind, w.City)
 }
 
@@ -265,12 +277,12 @@ type senDailyResp struct {
 func (s *Service) fetchSeniverse() (Weather, bool) {
 	b, err := s.get(sprintf(senNowURL, senKey))
 	if err != nil {
-		log.Printf("[netinfo] 心知天气(实时) 请求失败: %v", err)
+		logx.Debugf("[netinfo] 心知天气(实时) 请求失败: %v", err)
 		return Weather{}, false
 	}
 	var nr senNowResp
 	if err := json.Unmarshal(b, &nr); err != nil || len(nr.Results) == 0 {
-		log.Printf("[netinfo] 心知天气(实时) 解析失败: %v", err)
+		logx.Debugf("[netinfo] 心知天气(实时) 解析失败: %v", err)
 		return Weather{}, false
 	}
 	res := nr.Results[0]
@@ -318,12 +330,12 @@ type wttrResp struct {
 func (s *Service) fetchWttr() (Weather, bool) {
 	b, err := s.get(wttrURL)
 	if err != nil {
-		log.Printf("[netinfo] wttr.in 请求失败: %v", err)
+		logx.Debugf("[netinfo] wttr.in 请求失败: %v", err)
 		return Weather{}, false
 	}
 	var r wttrResp
 	if err := json.Unmarshal(b, &r); err != nil || len(r.Current) == 0 {
-		log.Printf("[netinfo] wttr.in 解析失败: %v", err)
+		logx.Debugf("[netinfo] wttr.in 解析失败: %v", err)
 		return Weather{}, false
 	}
 	cur := r.Current[0]

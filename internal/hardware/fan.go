@@ -2,30 +2,44 @@ package hardware
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"r1-toolbox/internal/logx"
 )
 
+// tempFallback 传感器读不到时**仅供调速**使用的保守值。
+//
+// 它绝不会出现在界面上：界面走 GetTemp 的 ok=false 显示「—」。
+// 旧实现把这个 30 当成真实读数返回，于是温度读数失败时屏上赫然写着
+// 「30°C」，而实际上一个传感器都没读到 —— 这是明确的编数据。
+const tempFallback = 30.0
+
 type FanController struct {
-	it8628Path    string
-	coretempPath  string
-	cpuPWMIndex   int
-	hddPWMIndex   int
+	it8628Path   string
+	coretempPath string
+	cpuPWMIndex  int
+	hddPWMIndex  int
+
+	// mu 保护下面这些运行期可变设置。
+	//
+	// -race 实锤（2026-10-28）：Web 的 /api/fan 与 /api/fan/curve 在写
+	// cpuMode / 曲线上下限，而 Run() 协程同时每秒读它们算转速 ——
+	// 7 处 DATA RACE 里有两处就在这条路径上（handleFanCurve→SetHDDTempRange
+	// 对 FanController.Run）。表现是「风扇设置偶尔设了不生效」。
+	mu            sync.RWMutex
 	cpuMode       string
 	hddMode       string
-	CPUMinTemp    int
-	CPUMaxTemp    int
-	HDDMinTemp    int
-	HDDMaxTemp    int
+	cpuMinTemp    int
+	cpuMaxTemp    int
+	hddMinTemp    int
+	hddMaxTemp    int
 	cpuTempSensor string
 	hddTempSensor string
-	lastCPUSpeed  int
-	lastHDDSpeed  int
-
 	// hddTempSource 由主程序注入：返回「真实硬盘温度」（多盘取最高）。
 	//
 	// 这是 2026-09-27 洋哥提出的修正。原来机箱风扇读的是 it8628:temp2 ——
@@ -36,29 +50,36 @@ type FanController struct {
 	// 屏幕上的数字和调速用的数字永远一致。
 	// 注入为空或读不到时，回退到 hddTempSensor（至少比失控安全）。
 	hddTempSource func() float64
+
+	// speedMu 串行化「写 pwm」与 lastSpeed 去重。
+	// 目前只有 Run() 一个写者，但 SetCPUSpeed 是导出方法，
+	// 将来 Web 面板直接调也不会踩到。
+	speedMu      sync.Mutex
+	lastCPUSpeed int
+	lastHDDSpeed int
 }
 
 func NewFanController() *FanController {
 	it8628 := DiscoverIT8628Path()
 	coretemp := DiscoverCoretempPath()
-	
-	log.Printf("发现 IT8628: %s", it8628)
-	log.Printf("发现 Coretemp: %s", coretemp)
-	
+
+	logx.Debugf("发现 IT8628: %s", it8628)
+	logx.Debugf("发现 Coretemp: %s", coretemp)
+
 	return &FanController{
-		it8628Path:    it8628,
-		coretempPath:  coretemp,
-		cpuPWMIndex:   3,
-		hddPWMIndex:   2,
-		cpuMode:       "auto",
-		hddMode:       "auto",
-		CPUMinTemp:    35,
-		CPUMaxTemp:    75,
+		it8628Path:   it8628,
+		coretempPath: coretemp,
+		cpuPWMIndex:  3,
+		hddPWMIndex:  2,
+		cpuMode:      "auto",
+		hddMode:      "auto",
+		cpuMinTemp:   35,
+		cpuMaxTemp:   75,
 		// 机箱风扇曲线：40°C 起调、60°C 满速。
 		// 盘体 37°C → 最低档；50°C（本机 NVMe 常态）→ 约 152/255；60°C → 满速。
 		// 想看更安静就把 MaxTemp 调大，更保守就调小（配置项 fan.hdd.min_temp/max_temp）。
-		HDDMinTemp:    40,
-		HDDMaxTemp:    60,
+		hddMinTemp:    40,
+		hddMaxTemp:    60,
 		cpuTempSensor: "coretemp:Package id 0",
 		hddTempSensor: "it8628:temp2", // 仅作兜底：盘温读不到时才用它
 		lastCPUSpeed:  -1,
@@ -67,53 +88,61 @@ func NewFanController() *FanController {
 }
 
 // SetHDDTempSource 注入真实硬盘温度来源（由 main 接 monitor.DiskMonitor）
-func (f *FanController) SetHDDTempSource(fn func() float64) { f.hddTempSource = fn }
-
-// hddTemp 取机箱风扇的被控温度：优先盘体温度，取不到才回退主板传感器
-func (f *FanController) hddTemp() float64 {
-	if f.hddTempSource != nil {
-		if v := f.hddTempSource(); v > 0 {
-			return v
-		}
-	}
-	return f.GetTemp(f.hddTempSensor)
+func (f *FanController) SetHDDTempSource(fn func() float64) {
+	f.mu.Lock()
+	f.hddTempSource = fn
+	f.mu.Unlock()
 }
 
 func (f *FanController) Init() error {
 	if f.it8628Path == "" {
 		return fmt.Errorf("未找到 IT8628 芯片")
 	}
-	
-	log.Printf("设置 PWM%d 为手动模式", f.cpuPWMIndex)
+
+	logx.Debugf("设置 PWM%d 为手动模式", f.cpuPWMIndex)
 	f.setPWMEnable(f.cpuPWMIndex, 1)
-	
-	log.Printf("设置 PWM%d 为手动模式", f.hddPWMIndex)
+
+	logx.Debugf("设置 PWM%d 为手动模式", f.hddPWMIndex)
 	f.setPWMEnable(f.hddPWMIndex, 1)
-	
+
 	return nil
 }
 
 func (f *FanController) setPWMEnable(pwmIndex int, mode int) error {
 	path := filepath.Join(f.it8628Path, fmt.Sprintf("pwm%d_enable", pwmIndex))
-	log.Printf("写入 %s = %d", path, mode)
+	logx.Debugf("写入 %s = %d", path, mode)
 	return os.WriteFile(path, []byte(strconv.Itoa(mode)), 0644)
 }
 
 func (f *FanController) SetCPUMode(mode string) {
+	f.mu.Lock()
+	changed := f.cpuMode != mode
 	f.cpuMode = mode
-	log.Printf("CPU 风扇模式: %s", mode)
+	f.mu.Unlock()
+	if changed {
+		logx.Printf("CPU 风扇模式: %s", mode)
+	}
 }
 
 func (f *FanController) SetHDDMode(mode string) {
+	f.mu.Lock()
+	changed := f.hddMode != mode
 	f.hddMode = mode
-	log.Printf("HDD 风扇模式: %s", mode)
+	f.mu.Unlock()
+	if changed {
+		logx.Printf("HDD 风扇模式: %s", mode)
+	}
 }
 
 func (f *FanController) GetCPUMode() string {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	return f.cpuMode
 }
 
 func (f *FanController) GetHDDMode() string {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	return f.hddMode
 }
 
@@ -163,13 +192,28 @@ func (f *FanController) CurrentPWMDuty() (int, int) {
 }
 
 func (f *FanController) SetCPUTempRange(minTemp, maxTemp int) {
-	f.CPUMinTemp = minTemp
-	f.CPUMaxTemp = maxTemp
+	f.mu.Lock()
+	f.cpuMinTemp, f.cpuMaxTemp = minTemp, maxTemp
+	f.mu.Unlock()
 }
 
 func (f *FanController) SetHDDTempRange(minTemp, maxTemp int) {
-	f.HDDMinTemp = minTemp
-	f.HDDMaxTemp = maxTemp
+	f.mu.Lock()
+	f.hddMinTemp, f.hddMaxTemp = minTemp, maxTemp
+	f.mu.Unlock()
+}
+
+// CPUTempRange / HDDTempRange 供 Web 回读（避免让 handler 直接摸字段）
+func (f *FanController) CPUTempRange() (int, int) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.cpuMinTemp, f.cpuMaxTemp
+}
+
+func (f *FanController) HDDTempRange() (int, int) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.hddMinTemp, f.hddMaxTemp
 }
 
 func (f *FanController) SetCPUSpeed(speed int) error {
@@ -179,19 +223,21 @@ func (f *FanController) SetCPUSpeed(speed int) error {
 	if speed > 255 {
 		speed = 255
 	}
-	
+
+	f.speedMu.Lock()
+	defer f.speedMu.Unlock()
+
 	if f.lastCPUSpeed == speed {
 		return nil
 	}
-	
+
 	path := filepath.Join(f.it8628Path, fmt.Sprintf("pwm%d", f.cpuPWMIndex))
-	log.Printf("设置 CPU 风扇速度: %s = %d", path, speed)
-	
 	err := os.WriteFile(path, []byte(strconv.Itoa(speed)), 0644)
 	if err == nil {
 		f.lastCPUSpeed = speed
+		logx.Debugf("CPU 风扇 → %d/255", speed)
 	} else {
-		log.Printf("写入失败: %v", err)
+		logx.Printf("CPU 风扇写入失败: %v", err)
 	}
 	return err
 }
@@ -203,158 +249,213 @@ func (f *FanController) SetHDDSpeed(speed int) error {
 	if speed > 255 {
 		speed = 255
 	}
-	
+
+	f.speedMu.Lock()
+	defer f.speedMu.Unlock()
+
 	if f.lastHDDSpeed == speed {
 		return nil
 	}
-	
+
 	path := filepath.Join(f.it8628Path, fmt.Sprintf("pwm%d", f.hddPWMIndex))
-	log.Printf("设置 HDD 风扇速度: %s = %d", path, speed)
-	
 	err := os.WriteFile(path, []byte(strconv.Itoa(speed)), 0644)
 	if err == nil {
 		f.lastHDDSpeed = speed
+		logx.Debugf("机箱风扇 → %d/255", speed)
 	} else {
-		log.Printf("写入失败: %v", err)
+		logx.Printf("机箱风扇写入失败: %v", err)
 	}
 	return err
 }
 
+// ------------------------------------------------------------
+//  温度读取
+// ------------------------------------------------------------
+//
+// 🔴 语义约定（2026-10-28 修正）：
+//   - GetTemp 返回 (读数, 是否读成功)。读不到就 ok=false，
+//     界面显示「—」。**不允许**用 30.0 这种占位值冒充真实读数。
+//   - TempForControl 只给调速用：读不到时返回保守值，保证风扇不会停。
 
-func (f *FanController) GetTemp(sensor string) float64 {
+// GetTemp 读取指定传感器；ok=false 表示这次读取失败
+func (f *FanController) GetTemp(sensor string) (float64, bool) {
 	if sensor == "" {
 		return f.getCoretempPackage()
 	}
-	
-	parts := strings.Split(sensor, ":")
+
+	parts := strings.SplitN(sensor, ":", 2)
 	if len(parts) != 2 {
-		return 30.0
+		return 0, false
 	}
-	
-	chip := parts[0]
-	label := parts[1]
-	
-	if chip == "coretemp" {
+	chip, label := parts[0], parts[1]
+
+	switch chip {
+	case "coretemp":
 		return f.getCoretempByLabel(label)
-	} else if chip == "it8628" || chip == "it87" {
+	case "it8628", "it87":
 		return f.getIT8628TempByLabel(label)
-	} else if chip == "nvme" {
+	case "nvme":
 		return f.getNVMeTempByLabel(label)
 	}
-	
-	return 30.0
+	return 0, false
 }
 
-func (f *FanController) getCoretempPackage() float64 {
-	if f.coretempPath == "" {
-		return 30.0
+// TempForControl 供调速使用：读不到时返回保守值，绝不返回 0（会让风扇停）
+func (f *FanController) TempForControl(sensor string) float64 {
+	if v, ok := f.GetTemp(sensor); ok {
+		return v
 	}
-	
-	path := filepath.Join(f.coretempPath, "temp1_input")
-	data, err := os.ReadFile(path)
+	return tempFallback
+}
+
+func (f *FanController) getCoretempPackage() (float64, bool) {
+	if f.coretempPath == "" {
+		return 0, false
+	}
+	b, err := os.ReadFile(filepath.Join(f.coretempPath, "temp1_input"))
 	if err != nil {
-		return 30.0
+		return 0, false
 	}
-	
-	temp, _ := strconv.Atoi(strings.TrimSpace(string(data)))
-	return float64(temp) / 1000.0
+	t, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || t <= 0 {
+		return 0, false
+	}
+	return float64(t) / 1000.0, true
 }
 
-func (f *FanController) getCoretempByLabel(label string) float64 {
+func (f *FanController) getCoretempByLabel(label string) (float64, bool) {
 	if f.coretempPath == "" {
-		return 30.0
+		return 0, false
 	}
-	
 	if label == "Package id 0" {
 		return f.getCoretempPackage()
 	}
-	
+
 	for i := 1; i <= 10; i++ {
-		labelPath := filepath.Join(f.coretempPath, fmt.Sprintf("temp%d_label", i))
-		labelData, err := os.ReadFile(labelPath)
+		labelData, err := os.ReadFile(filepath.Join(f.coretempPath, fmt.Sprintf("temp%d_label", i)))
 		if err != nil {
 			continue
 		}
-		
-		if strings.TrimSpace(string(labelData)) == label {
-			inputPath := filepath.Join(f.coretempPath, fmt.Sprintf("temp%d_input", i))
-			data, err := os.ReadFile(inputPath)
-			if err == nil {
-				temp, _ := strconv.Atoi(strings.TrimSpace(string(data)))
-				return float64(temp) / 1000.0
-			}
+		if strings.TrimSpace(string(labelData)) != label {
+			continue
 		}
+		data, err := os.ReadFile(filepath.Join(f.coretempPath, fmt.Sprintf("temp%d_input", i)))
+		if err != nil {
+			continue
+		}
+		t, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil || t <= 0 {
+			continue
+		}
+		return float64(t) / 1000.0, true
 	}
-	
-	return 30.0
+	return 0, false
 }
 
-func (f *FanController) getIT8628TempByLabel(label string) float64 {
+func (f *FanController) getIT8628TempByLabel(label string) (float64, bool) {
 	if f.it8628Path == "" {
-		return 30.0
+		return 0, false
 	}
-	
 	tempIndex := 0
 	if strings.HasPrefix(label, "temp") {
 		fmt.Sscanf(label, "temp%d", &tempIndex)
 	}
-	
-	if tempIndex > 0 {
-		path := filepath.Join(f.it8628Path, fmt.Sprintf("temp%d_input", tempIndex))
-		data, err := os.ReadFile(path)
-		if err == nil {
-			temp, _ := strconv.Atoi(strings.TrimSpace(string(data)))
-			return float64(temp) / 1000.0
-		}
+	if tempIndex <= 0 {
+		return 0, false
 	}
-	
-	return 30.0
+	data, err := os.ReadFile(filepath.Join(f.it8628Path, fmt.Sprintf("temp%d_input", tempIndex)))
+	if err != nil {
+		return 0, false
+	}
+	t, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || t <= 0 {
+		return 0, false
+	}
+	return float64(t) / 1000.0, true
 }
 
-func (f *FanController) getNVMeTempByLabel(label string) float64 {
+func (f *FanController) getNVMeTempByLabel(label string) (float64, bool) {
 	nvmePath := DiscoverNVMePath()
 	if nvmePath == "" {
-		return 30.0
+		return 0, false
 	}
-	
-	path := filepath.Join(nvmePath, "temp1_input")
-	data, err := os.ReadFile(path)
-	if err == nil {
-		temp, _ := strconv.Atoi(strings.TrimSpace(string(data)))
-		return float64(temp) / 1000.0
+	data, err := os.ReadFile(filepath.Join(nvmePath, "temp1_input"))
+	if err != nil {
+		return 0, false
 	}
-	
-	return 30.0
+	t, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || t <= 0 {
+		return 0, false
+	}
+	return float64(t) / 1000.0, true
 }
+
+// ------------------------------------------------------------
+//  调速主循环
+// ------------------------------------------------------------
 
 func (f *FanController) Run() {
 	for {
-		cpuTemp := f.GetTemp(f.cpuTempSensor)
-		// 机箱风扇被控量 = 真实盘体温度（多盘取最高）
-		hddTemp := f.hddTemp()
-
-		var cpuSpeed int
-		if f.cpuMode == "auto" {
-			cpuSpeed = f.CalculateSpeed(cpuTemp, f.CPUMinTemp, f.CPUMaxTemp, 50, 255)
-		} else {
-			cpuSpeed = map[string]int{"low": 85, "medium": 170, "high": 255}[f.cpuMode]
-		}
-
-		var hddSpeed int
-		if f.hddMode == "auto" {
-			hddSpeed = f.CalculateSpeed(hddTemp, f.HDDMinTemp, f.HDDMaxTemp, 50, 255)
-		} else {
-			hddSpeed = map[string]int{"low": 85, "medium": 170, "high": 255}[f.hddMode]
-		}
-
-		f.SetCPUSpeed(cpuSpeed)
-		f.SetHDDSpeed(hddSpeed)
-
+		f.tick()
 		time.Sleep(time.Second)
 	}
 }
 
+// tick 一次调速。
+//
+// 持锁只做「取快照」这一件事，温度读取与 pwm 写入都在锁外 ——
+// 否则 Web 面板一次改曲线就得等 3 个 hwmon 文件读完。
+func (f *FanController) tick() {
+	f.mu.RLock()
+	cpuSensor := f.cpuTempSensor
+	hddSensor := f.hddTempSensor
+	cpuMode := f.cpuMode
+	hddMode := f.hddMode
+	cpuMin, cpuMax := f.cpuMinTemp, f.cpuMaxTemp
+	hddMin, hddMax := f.hddMinTemp, f.hddMaxTemp
+	hddSrc := f.hddTempSource
+	f.mu.RUnlock()
+
+	cpuTemp := f.TempForControl(cpuSensor)
+
+	// 机箱风扇被控量 = 真实盘体温度（多盘取最高），取不到才回退主板传感器
+	hddTemp := 0.0
+	if hddSrc != nil {
+		hddTemp = hddSrc()
+	}
+	if hddTemp <= 0 {
+		hddTemp = f.TempForControl(hddSensor)
+	}
+
+	cpuSpeed := fixedSpeed(cpuMode)
+	if cpuMode == "auto" {
+		cpuSpeed = f.CalculateSpeed(cpuTemp, cpuMin, cpuMax, 50, 255)
+	}
+	hddSpeed := fixedSpeed(hddMode)
+	if hddMode == "auto" {
+		hddSpeed = f.CalculateSpeed(hddTemp, hddMin, hddMax, 50, 255)
+	}
+
+	f.SetCPUSpeed(cpuSpeed)
+	f.SetHDDSpeed(hddSpeed)
+}
+
+// fixedSpeed 手动模式对应的占空比（未知模式按中速，不按 0）
+func fixedSpeed(mode string) int {
+	switch mode {
+	case "low":
+		return 85
+	case "high", "full":
+		return 255
+	default:
+		return 170
+	}
+}
+
 func (f *FanController) CalculateSpeed(temp float64, minTemp, maxTemp, minSpeed, maxSpeed int) int {
+	if maxTemp <= minTemp { // 配置损坏（min>=max）时不产生 NaN
+		return maxSpeed
+	}
 	if temp <= float64(minTemp) {
 		return max(minSpeed, 25)
 	}

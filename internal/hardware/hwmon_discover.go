@@ -12,14 +12,14 @@ func DiscoverHwmonPath(chipName string) string {
 	if err != nil {
 		return ""
 	}
-	
+
 	for _, entry := range entries {
 		namePath := filepath.Join(hwmonBase, entry.Name(), "name")
 		data, err := os.ReadFile(namePath)
 		if err != nil {
 			continue
 		}
-		
+
 		name := strings.TrimSpace(string(data))
 		if strings.Contains(name, chipName) {
 			return filepath.Join(hwmonBase, entry.Name())

@@ -7,7 +7,8 @@ build/
 *.out
 
 # Go
-vendor/
+# vendor/ 已入仓（2026-10-28）：设备与 CI 都可能没有外网，
+# go vet/build 依赖 proxy.golang.org 会随机失败 —— 依赖跟着仓库走
 
 # 临时与备份文件（迭代过程产生的 .bak/.orig 一律不入库）
 *.log
