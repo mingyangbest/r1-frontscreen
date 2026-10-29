@@ -12,7 +12,7 @@
 |:---:|:---:|:---:|
 | ![环境](docs/screenshots/env.png) | ![详情](docs/screenshots/detail.png) | ![系统](docs/screenshots/system.png) |
 
-*三页触摸翻页 · 112px 大时钟+天气融合 · 每卡一色的低饱和 tonal 配色 · 截图中的 IP 与面板令牌已单独打码*
+*三页触摸翻页 · 112px 大时钟+天气融合 · 首屏放趋势（CPU 60 秒曲线）、每核明细在详情页 · 每卡一色的低饱和 tonal 配色 · 截图中的 IP 与面板令牌已单独打码*
 
 **对比旧版五页（v0.3.0 及以前）的变化**：
 

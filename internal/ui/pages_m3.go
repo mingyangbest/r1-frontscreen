@@ -551,13 +551,15 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 			if i < len(cores) {
 				v = clamp(cores[i], 0, 100)
 			}
-			// 位图顶比条顶高 8：20px 字号墨迹在位图顶下 6px、高 13，
-			// 落下去字形中线正好压在 9px 条的垂直中线上
-			DrawTextL(c, fs, fmt.Sprintf("C%d", i), PadX+m3Pad, rowY-8, FzSmall, th.Sub)
-			c.Bar(PadX+m3Pad+40, rowY, CardW-2*m3Pad-40-54, 9, 4, v/100,
+			// 位图顶比条顶高 7：20px 字号墨迹在位图顶下 6px、高 13，
+			// 落下去字形中线压在 11px 条的垂直中线上
+			DrawTextL(c, fs, fmt.Sprintf("C%d", i), PadX+m3Pad, rowY-7, FzSmall, th.Sub)
+			// 条 11px 而不是 9：这台机器常态负载 5~10%，条本来就只有
+			// 十几像素长，细条在低值下几乎看不见，"哪个核更忙"就白问了
+			c.Bar(PadX+m3Pad+40, rowY, CardW-2*m3Pad-40-54, 11, 5, v/100,
 				th.Track, m3Bar(hueTeal, v, 90, th.Danger))
 			DrawTextLR(c, fs, fmt.Sprintf("%.0f%%", v),
-				PadX+CardW-m3Pad, rowY-8, FzSmall, th.Text)
+				PadX+CardW-m3Pad, rowY-7, FzSmall, th.Text)
 		}
 	}
 
