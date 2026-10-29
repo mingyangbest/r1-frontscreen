@@ -6,13 +6,13 @@
 
 ## 界面预览
 
-### v0.4.0 · Material You 三页版（当前）
+### v0.7.0 · Material You 三页版（当前）
 
 | 环境（主屏） | 详情 | 系统 |
 |:---:|:---:|:---:|
 | ![环境](docs/screenshots/env.png) | ![详情](docs/screenshots/detail.png) | ![系统](docs/screenshots/system.png) |
 
-*三页触摸翻页 · 112px 大时钟+天气融合 · 每卡一色的低饱和 tonal 配色 · 截图中的 IP 已单独打码*
+*三页触摸翻页 · 112px 大时钟+天气融合 · 每卡一色的低饱和 tonal 配色 · 截图中的 IP 与面板令牌已单独打码*
 
 **对比旧版五页（v0.3.0 及以前）的变化**：
 
@@ -41,6 +41,7 @@
 | **性能** | CPU 占用从约 89% 优化到 **单核 2.1%**（跳帧渲染 + 局部重绘 + 圆角遮罩缓存 + 亚像素插值 + 采样减频） |
 | **安全** | Web 面板令牌鉴权（首次启动自动生成、屏幕系统页显示）、亮度/风扇曲线等接口输入校验、修复磁盘监控数据竞争（`-race` 验证） |
 | **体验** | 负载三态色（CPU / 内存 / 硬盘容量：≤50% 绿 · >50% 琥珀黄 · ≥90% 砖红，颜色即负载读数）、天气图标静态化（相位冻结）、屏幕夜间自动调暗（18:00–06:00 背光降至 `night_brightness`）、配置文件保存保留注释、崩溃自愈（systemd 加固） |
+| **可靠性** | systemd 看门狗（`Type=notify` + `WatchdogSec=30`，主循环卡死 30 秒内自动重启，不再「进程活着但画面定格」）、smartctl/lsblk 硬超时（D 状态进程不会卡住渲染）、采样移到后台协程 + 不可变快照（`-race` 实测归零）、GitHub Actions 五道门（fmt/vet/test/test -race/build） |
 | **代码** | 渲染器模块化拆分（canvas / textrender / theme / widgets）、删除无人消费的死代码 |
 
 ## 硬件与系统要求
@@ -124,6 +125,10 @@ docker compose up -d screen   # privileged + /dev/fb0 + host 网络
 
 完整版本历史见 [CHANGELOG.md](CHANGELOG.md)(每个版本打 git tag 并发布 [Release](https://github.com/mingyangbest/r1-frontscreen/releases))。最近更新:
 
+- **v0.7.0 · 2026-10-29**:首页删除「存储」卡（容量一年看两次，却占着 137px），腾出的高度给网络曲线（40→122px，微弱波动终于看得出形状）；系统页「设备」卡补 CPU 型号与内核串（读 `/proc`，读不到显示 `—`）；底部页签间距 7→14px、点宽 7→8px，三个点不再挤成一坨
+- **v0.6.2 · 2026-10-29**:修复翻页重播入场编排导致的画面抖动——手指刚把页面推到位、内容又整体淡入一遍；入场编排收窄为仅冷启动播放一次
+- **v0.6.1 · 2026-10-29**:动效与质感——卡面顶部提亮/底部压暗渐变烘焙（每帧只 blit）、内存/存储/CPU 数值滚动、点按卡片亮度脉冲；CPU 占用最重场景（连续翻页 20 次）整机 4.23%
+- **v0.6.0 · 2026-10-29**:工程化专项——并发收口（`-race` 7 处 DATA RACE 归零）、systemd 看门狗、smartctl/lsblk 硬超时、采样后台协程、近 30 个单测、GitHub Actions CI
 - **v0.5.0 · 2026-10-28**:配色降饱和（bg 16~23%/强调色 13~20%）+ 排版系统重写（统一基线锚、字距与定值间隙），内存改为「物理 16 GB / 内核可见 15.4 GB」双口径，公网 IP 恢复屏上明文（外发截图单独打码）
 - **v0.4.0 · 2026-10-28**:界面重构为 Material You 三页版——环境(大时钟+天气+多彩 tonal 卡)/详情/系统,新增容器监控与上传下载速度大卡,公网 IP 自动打码
 - **v0.3.0 · 2026-10-28**:屏幕夜间自动调暗——18:00~06:00 背光降至 `night_brightness`,启动/唤醒/跨界均按昼夜取值,不覆盖手动调节
@@ -135,6 +140,7 @@ docker compose up -d screen   # privileged + /dev/fb0 + host 网络
 
 ```
 cmd/main.go            程序入口
+cmd/preview/           设计稿离屏渲染工具（把候选版面画成 PNG，不参与运行、不占屏幕）
 internal/ui/           屏幕渲染：canvas / textrender / theme / widgets / pages
 internal/monitor/      CPU / 内存 / 磁盘 / 温度采集（smartctl 30s TTL 缓存）
 internal/hardware/     背光、风扇曲线、触摸屏、hwmon 发现
