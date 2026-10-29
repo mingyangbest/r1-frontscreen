@@ -46,11 +46,15 @@
 
 ## 硬件与系统要求
 
-- 海康威视 **R1** 或 **R1X** NAS（程序直接操作前置屏幕的帧缓冲 `/dev/fb0`、背光 sysfs、风扇 hwmon，**无法在普通电脑上运行**）
+- 海康威视 **R1** 或 **R1X** NAS（程序经 SDL2 输出到前置屏幕，走 KMS/DRM 的 `/dev/dri/card*`；另需背光 sysfs 与风扇 hwmon。**无法在普通电脑上运行**）
 - 飞牛 fnOS 或 Debian/Ubuntu 系发行版
 - 编译需要 Go 1.19+；Docker 构建方式无需在本机装 Go
 
 ## 部署方式
+
+> **不想在本机装 Go？** [Releases](https://github.com/mingyangbest/r1-frontscreen/releases) 提供预编译二进制。
+> R1 / R1X 是 Intel N100（**x86_64**），请取 `r1-toolbox-linux-amd64`；
+> `r1-toolbox-linux-arm64` 仅供其他 ARM 主板使用，装到 R1 上会直接「无法执行」。
 
 ### 方式 A：一键脚本（推荐，宿主机 systemd 服务）
 
