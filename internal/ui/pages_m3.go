@@ -273,15 +273,20 @@ const (
 	envTopH   = 184
 	envCardsY = 200
 	envCardsH = 122
-	envCoresY = 336
-	envCoresH = 102
-	// 2026-10-29：首页「存储」卡整块删除（洋哥反馈：容量这种事一年看两次，
-	// 占着 137px 天天在眼皮底下没用）。腾出的空间给网络曲线加高 ——
-	// 网络是这台机器上唯一"随时在变、值得看趋势"的指标。
-	envNetY = 452
-	envNetH = 288
-	// 底部 pill 跟着网络卡走，不在中间留一段断裂的空白
-	envPillY = 754
+	// 2026-10-29：CPU 历史从第二页搬到首页中间（洋哥：首页是"一眼看趋势"，
+	// 每核明细那种细节应该待在详情页）。
+	//
+	// 原「CPU 负载」卡只有 102px，画不了曲线。这里把 pill 从 754 下移到 816
+	// （与系统页 pill 底 856 对齐，翻页时页面底部不再上下来回跳），
+	// 借出的 62px 全给历史卡，做到 178 —— 和它原本在详情页的 183 几乎同高，
+	// 曲线区 74px 不必缩水，只是底部「当前」那一行收紧 3px。
+	envHistY = 336
+	envHistH = 178
+	// 网络卡 288 → 274：只让出 14px，曲线区反而从 122 变 126
+	envNetY = 528
+	envNetH = 274
+	// 底部 pill 跟到页底空白里，三页底边基本齐平（详情页末卡底 850 / 系统页 856）
+	envPillY = 816
 	envPillH = 40
 )
 
@@ -290,7 +295,7 @@ func (p *EnvPage) DataRects(d *DrawCtx) []Rect {
 	// 天气快照变化走全局的天气戳全屏重画。
 	return []Rect{
 		{PadX - 6, envCardsY - 6, CardW + 12, envCardsH + 12},
-		{PadX - 6, envCoresY - 6, CardW + 12, envCoresH + 12},
+		{PadX - 6, envHistY - 6, CardW + 12, envHistH + 12},
 		{PadX - 6, envNetY - 6, CardW + 12, envNetH + 12},
 		{PadX - 6, envPillY - 6, CardW + 12, envPillH + 12},
 	}
@@ -305,7 +310,7 @@ func (p *EnvPage) CardRects() []Rect {
 		{PadX, envCardsY, 104, envCardsH},
 		{PadX + 116, envCardsY, 104, envCardsH},
 		{PadX + 232, envCardsY, 104, envCardsH},
-		{PadX, envCoresY, CardW, envCoresH},
+		{PadX, envHistY, CardW, envHistH},
 		{PadX, envNetY, CardW, envNetH},
 		{PadX, envPillY, CardW, envPillH},
 	}
@@ -393,30 +398,32 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 		}
 	}
 
-	// ---------------- CPU 负载（每核迷你条，单行）----------------
-	if c.ClipVisible(PadX, envCoresY, CardW, envCoresH) {
-		m3Card(c, d, PadX, envCoresY, CardW, envCoresH, hueTeal, "CPU 负载")
-		m3Note(c, fs, PadX+CardW-m3Pad, envCoresY+m3TitleBase, th,
-			fmt.Sprintf("负载 %.2f", m.LoadAvg[0]))
-
-		cores := m.CPUCores
-		n := coreCount(m)
-		if n > 4 {
-			n = 4
-		}
-		cellW := 71 // (328 - 22*2) / 4 = 71
-		for i := 0; i < n; i++ {
-			cx := PadX + m3Pad + i*cellW
-			// DrawTextL 位图顶 +51 → 墨迹 [56, 67]（17px 字号 ascent 空隙 5px）
-			DrawTextL(c, fs, fmt.Sprintf("C%d", i), cx, envCoresY+51, FzTiny, th.Sub)
-			v := 0.0
-			if i < len(cores) {
-				v = clamp(cores[i], 0, 100)
+	// ---------------- CPU 历史 · 60 秒（蓝卡，大曲线）----------------
+	// 采样 2 秒一点、窗口 30 点 = 60 秒 —— 标题口径必须与 sampler.fastEvery 一致，
+	// 否则就是在屏上报一个假的时间跨度。
+	if c.ClipVisible(PadX, envHistY, CardW, envHistH) {
+		m3Card(c, d, PadX, envHistY, CardW, envHistH, hueBlue, "CPU 历史 · 60 秒")
+		peak := 0.0
+		for _, v := range m.CPUHistory {
+			if v > peak {
+				peak = v
 			}
-			// 条顶 +78（标签墨迹底 +67 之下 11），高 6 底 +84，卡底 +102 → 18
-			c.Bar(cx, envCoresY+78, 62, 6, 3, v/100,
-				th.Track, m3Bar(hueTeal, v, 90, th.Danger))
 		}
+		m3Note(c, fs, PadX+CardW-m3Pad, envHistY+m3TitleBase, th,
+			fmt.Sprintf("峰值 %.0f%%", peak))
+		// 曲线区：顶 +58（标题墨迹底 +40 之下 18），高 74，底 +132
+		for _, gy := range []int{25, 50} {
+			DrawHairline(c, th, PadX+m3Pad, envHistY+58+gy, CardW-2*m3Pad)
+		}
+		c.Curve(PadX+m3Pad, envHistY+58, CardW-2*m3Pad, 74, m.CPUHistory,
+			autoTop(m.CPUHistory, 20), 60, hueBlue.hi, 2, 0.20)
+		// 当前值墨迹顶 +144（曲线底 +132 之下 12）→ 基线 +161，卡底 +178 → 17。
+		// 复用三指标卡的缓动键 env.cpu：同一个数字在两处出现，绝不能各缓动一套
+		DrawPartsL(c, fs, PadX+m3Pad, envHistY+161, FzSmall, []TPart{
+			{S: "当前", Col: th.Dim},
+			{S: fmt.Sprintf("%.0f%%", d.Ease("env.cpu", m.CPUPercent)),
+				Col: th.Sub, Latin: true, Gap: 6},
+		})
 	}
 
 	// ---------------- 网络（双速率 + 双曲线）----------------
@@ -443,12 +450,11 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 			}
 		}
 		scale *= 1.15
-		// 曲线顶 +130（速率行墨迹底 +87 之下 43）、高 122，底 +252，卡底 +288 → 36。
-		// 卡高从 158 加到 288 后腾出的空间，一半给"数字区到曲线区"的呼吸
-		// （43px，原来是 13px 贴着走），一半给曲线本身（40 → 122px）——
-		// 40px 时 0.02 和 0.10 MB/s 在视觉上都是"贴底一条线"，等于没画。
-		c.Curve(PadX+m3Pad, envNetY+130, CardW-2*m3Pad, 122, recv, scale, 60, P.NetDown, 2, 0.26)
-		c.Curve(PadX+m3Pad, envNetY+130, CardW-2*m3Pad, 122, send, scale, 60, P.NetUp, 2, 0)
+		// 曲线顶 +130（速率行墨迹底 +87 之下 43）、高 126，底 +256，卡底 +274 → 18。
+		// 卡高从 288 收到 274 只是给上面的历史卡腾 14px，曲线本身没瘦
+		// （122 → 126：让出的高度里有一半是原来卡底 36 的留白）。
+		c.Curve(PadX+m3Pad, envNetY+130, CardW-2*m3Pad, 126, recv, scale, 60, P.NetDown, 2, 0.26)
+		c.Curve(PadX+m3Pad, envNetY+130, CardW-2*m3Pad, 126, send, scale, 60, P.NetUp, 2, 0)
 	}
 
 	// ---------------- 底部双 pill（容器 / 运行时长）----------------
@@ -523,28 +529,36 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 	th, fs := d.Theme, d.Fonts
 	m := p.mon.Snapshot()
 
-	// ---------------- CPU 历史 · 60 秒（大曲线，蓝卡）----------------
+	// ---------------- CPU 负载（每核明细，青卡）----------------
+	// 从首页搬来：首页只留「趋势」，每核分布这种细节归详情页。
+	// 首页原来那版是 62px 宽的单行迷你条，两个核差 10% 时长度只差 6px，
+	// 等于看不出来；这里有 183px 高，四个核各占一行、条长 194px，
+	// 差异一眼可辨。
 	if c.ClipVisible(PadX, dtCpuY, CardW, dtCpuH) {
-		m3Card(c, d, PadX, dtCpuY, CardW, dtCpuH, hueBlue, "CPU 历史 · 60 秒")
-		peak := 0.0
-		for _, v := range m.CPUHistory {
-			if v > peak {
-				peak = v
-			}
-		}
+		m3Card(c, d, PadX, dtCpuY, CardW, dtCpuH, hueTeal, "CPU 负载")
 		m3Note(c, fs, PadX+CardW-m3Pad, dtCpuY+m3TitleBase, th,
-			fmt.Sprintf("峰值 %.0f%%", peak))
-		// 曲线区：顶 +56（标题墨迹底 +36 之下 20），高 76，底 +132
-		for _, gy := range []int{25, 50} {
-			DrawHairline(c, th, PadX+m3Pad, dtCpuY+56+gy, CardW-2*m3Pad)
+			fmt.Sprintf("1m %.2f · 5m %.2f", m.LoadAvg[0], m.LoadAvg[1]))
+
+		cores := m.CPUCores
+		n := coreCount(m)
+		if n > 4 {
+			n = 4
 		}
-		c.Curve(PadX+m3Pad, dtCpuY+56, CardW-2*m3Pad, 76, m.CPUHistory,
-			autoTop(m.CPUHistory, 20), 60, hueBlue.hi, 2, 0.20)
-		// 当前值墨迹顶 +148（曲线底 +132 之下 16）→ 基线 +165，卡底 +183 → 18
-		DrawPartsL(c, fs, PadX+m3Pad, dtCpuY+165, FzSmall, []TPart{
-			{S: "当前", Col: th.Dim},
-			{S: fmt.Sprintf("%.0f%%", d.Ease("dt.cp", m.CPUPercent)), Col: th.Sub, Latin: true, Gap: 6},
-		})
+		for i := 0; i < n; i++ {
+			// 条顶 +62 起步、行距 32：末行条底 +167，卡底 +183 → 16
+			rowY := dtCpuY + 62 + i*32
+			v := 0.0
+			if i < len(cores) {
+				v = clamp(cores[i], 0, 100)
+			}
+			// 位图顶比条顶高 8：20px 字号墨迹在位图顶下 6px、高 13，
+			// 落下去字形中线正好压在 9px 条的垂直中线上
+			DrawTextL(c, fs, fmt.Sprintf("C%d", i), PadX+m3Pad, rowY-8, FzSmall, th.Sub)
+			c.Bar(PadX+m3Pad+40, rowY, CardW-2*m3Pad-40-54, 9, 4, v/100,
+				th.Track, m3Bar(hueTeal, v, 90, th.Danger))
+			DrawTextLR(c, fs, fmt.Sprintf("%.0f%%", v),
+				PadX+CardW-m3Pad, rowY-8, FzSmall, th.Text)
+		}
 	}
 
 	// ---------------- 内存（绝对量 + 缓存/Swap，紫卡）----------------
