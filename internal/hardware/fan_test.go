@@ -21,16 +21,16 @@ import (
 // 的并发形态。用 go test -race 跑，任何无锁访问都会炸。
 func TestFanConcurrentSettings(t *testing.T) {
 	f := &FanController{
-		cpuMode:      "auto",
-		hddMode:      "auto",
-		cpuMinTemp:   35,
-		cpuMaxTemp:   75,
-		hddMinTemp:   40,
-		hddMaxTemp:   60,
+		cpuMode:       "auto",
+		hddMode:       "auto",
+		cpuMinTemp:    35,
+		cpuMaxTemp:    75,
+		hddMinTemp:    40,
+		hddMaxTemp:    60,
 		cpuTempSensor: "coretemp:Package id 0",
 		hddTempSensor: "it8628:temp2",
-		lastCPUSpeed: -1,
-		lastHDDSpeed: -1,
+		lastCPUSpeed:  -1,
+		lastHDDSpeed:  -1,
 	}
 
 	var wg sync.WaitGroup
@@ -67,10 +67,10 @@ func TestCalculateSpeedBoundaries(t *testing.T) {
 	f := &FanController{}
 
 	cases := []struct {
-		name                      string
-		temp                      float64
-		minT, maxT, minS, maxS    int
-		want                      int
+		name                   string
+		temp                   float64
+		minT, maxT, minS, maxS int
+		want                   int
 	}{
 		{"低于下限取最小", 30, 40, 60, 50, 255, 50},
 		{"高于上限取最大", 70, 40, 60, 50, 255, 255},
