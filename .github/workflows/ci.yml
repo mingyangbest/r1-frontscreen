@@ -28,7 +28,10 @@ jobs:
       - name: gofmt
         run: |
           test -z "$(gofmt -l internal cmd)" || {
-            echo "以下文件未格式化:"; gofmt -l internal cmd; exit 1; }
+            echo "以下文件未格式化:"; gofmt -l internal cmd
+            echo "--- 差异（前 120 行）---"
+            gofmt -d internal cmd | head -120
+            exit 1; }
 
       - name: go vet
         run: go vet ./...
