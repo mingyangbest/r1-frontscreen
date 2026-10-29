@@ -145,7 +145,17 @@ func (s *Store) Get() Config {
 
 // Update 在写锁内修改配置，随后把快照落盘。
 // mutate 里不要做 IO、不要调用 Store 的任何方法（会自锁）。
+//
+// 锁序固定为 saveM → mu，任何新增的落盘路径都必须遵守。
+// 为什么必须先拿 saveM 再改内存：旧实现是「改内存→放锁→排队取 saveM」，
+// 而 s.mu 的解锁顺序与 saveM 的竞争顺序毫无关系，于是后改的值可能先落盘、
+// 先改的值反而最后落盘，磁盘留下一个旧快照而内存已是新值 —— 表现为丢更新。
+// TestConcurrentUpdate 抓到过「内存态 10002 != 落盘 10048」。
+// 现在「取快照」与「落盘」进同一临界区，最后一个写完的必然是最新快照。
 func (s *Store) Update(mutate func(*Config)) error {
+	s.saveM.Lock()
+	defer s.saveM.Unlock()
+
 	s.mu.Lock()
 	if mutate != nil {
 		mutate(&s.cur)
@@ -153,19 +163,19 @@ func (s *Store) Update(mutate func(*Config)) error {
 	snap := s.cur
 	s.mu.Unlock()
 
-	s.saveM.Lock()
-	defer s.saveM.Unlock()
 	return SaveTo(s.path, &snap)
 }
 
-// Save 把当前配置落盘
+// Save 把当前配置落盘。同样先拿 saveM 再取快照，
+// 避免一个旧快照盖掉刚由 Update 写下的新值。
 func (s *Store) Save() error {
+	s.saveM.Lock()
+	defer s.saveM.Unlock()
+
 	s.mu.RLock()
 	snap := s.cur
 	s.mu.RUnlock()
 
-	s.saveM.Lock()
-	defer s.saveM.Unlock()
 	return SaveTo(s.path, &snap)
 }
 
