@@ -57,7 +57,7 @@ type Renderer struct {
 	// CardRects 切成子图，逐块「淡入 + 上浮」错峰浮入。
 	// 每帧成本 = 一次背景恢复 + 两三张卡 blit + 按矩形局部上传 ≈ 2~3ms，
 	// 30fps 下只占 CPU 约 2%。
-	pendingEnter bool      // 待触发的入场编排（换页时置位，全屏帧消费）
+	pendingEnter bool      // 待触发的入场编排（仅冷启动置位，全屏帧消费）
 	enterAt      time.Time // 编排起点；zero 表示未在进行
 	enterRects   []Rect
 	enterSnaps   []*Sprite
@@ -258,8 +258,13 @@ func (r *Renderer) SwitchPage(dir int) {
 	// 此刻画布上还是"旧页的完整一帧"（上一步渲染留下的），直接截下来复用。
 	r.snapFrom = r.Canvas.Snapshot(0, clipTop, r.Canvas.W, clipBot-clipTop)
 	r.snapTo = nil
-	// 滑动结束后接一段卡片错峰浮入（startEnter 在全屏出口消费这个标志）
-	r.pendingEnter = true
+	// 🚫 这里**不能**再置 pendingEnter。
+	//
+	// 曾试过"滑动结束后接一段卡片错峰浮入"，实机手感：每次翻页画面先空
+	// 一下、再一块块浮上来 —— 手指刚把页面推到位，内容又重新出现一遍，
+	// 读起来就是"每次滑动都抖一下"（2026-10-29 洋哥反馈）。
+	// 翻页动画本身已经交代了空间关系，落地即定住才是正确的收尾；
+	// 入场编排只保留给冷启动那一次「从无到有」（见 cmd/main 的 ArmEnter）。
 	logx.Debugf("【页面切换】%d -> %d (dir=%d)", r.animFrom, r.animTo, dir)
 }
 
