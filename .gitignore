@@ -33,3 +33,7 @@ backgrounds/
 .DS_Store
 Thumbs.db
 web-ui/node_modules/
+
+# 设计稿预览页（cmd/preview 生成的 HTML 只是把 PNG 内联成 base64，
+# 一份就 110KB+，没有入库价值；同名 PNG 才是要保留的稿子）
+docs/screenshots/*.html
