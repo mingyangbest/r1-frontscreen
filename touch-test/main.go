@@ -71,7 +71,7 @@ func main() {
 	}
 
 	fmt.Println("\n--- 等待触摸数据 ---")
-	fmt.Println("请触摸屏幕 (Ctrl+C 退出)\n")
+	fmt.Println("请触摸屏幕 (Ctrl+C 退出)")
 
 	// 信号处理
 	sigChan := make(chan os.Signal, 1)
