@@ -5,6 +5,9 @@ on:
     branches: [master, main]
     tags: ['v*']
   pull_request:
+  # 手动入口：只跑 check 与 ARM64 构建校验，不产出 Release。
+  # 用途是在真正打 tag 前先验证 arm64 runner 与 SDL2 依赖是否可用。
+  workflow_dispatch:
 
 # 四道门：格式 → 静态分析 → 测试（含 -race）→ 构建。
 # vendor/ 已入仓：构建不依赖 proxy.golang.org（设备/CI 都可能没有外网）。
@@ -50,11 +53,16 @@ jobs:
             -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
             -o build/r1-toolbox ./cmd
 
-  release:
-    # 打 tag 时交叉编译并附到 Release（人工触发推送 tag 后自动出包）
-    if: startsWith(github.ref, 'refs/tags/v')
+  build-arm64:
+    # 在**原生 arm64 runner** 上编译，而不是 x86 交叉编译。
+    # 历史教训：曾用 gcc-aarch64-linux-gnu 交叉编译，但 x86 runner 没有 arm64
+    # 软件源，`apt install libsdl2-dev:arm64` 直接 "Unable to locate package"；
+    # apt 是原子操作，连带把 gcc-aarch64-linux-gnu 一起回滚，于是编译器根本
+    # 不存在。更糟的是那句 `|| true` 把整单失败吞掉，构建步骤再 `|| echo`
+    # 吞一次，job 一路绿灯却没有产物。现在：原生 arm64 + 不吞错。
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
     steps:
@@ -64,28 +72,32 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: 安装 ARM64 交叉工具链与 SDL2
+      - name: 安装 SDL2（arm64 原生源，失败即失败）
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            gcc-aarch64-linux-gnu pkg-config \
-            libsdl2-dev:arm64 libsdl2-ttf-dev:arm64 || true
+            libsdl2-dev libsdl2-ttf-dev
 
       - name: 构建 linux/arm64
         run: |
           VERSION=${GITHUB_REF_NAME}
           COMMIT=$(git rev-parse --short HEAD)
-          CGO_ENABLED=1 \
-          CC=aarch64-linux-gnu-gcc \
-          PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig \
-          go build -trimpath \
+          CGO_ENABLED=1 go build -trimpath \
             -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
-            -o build/r1-toolbox-linux-arm64 ./cmd || \
-          echo "ARM64 交叉编译失败（SDL2 arm64 不可用），跳过附件"
+            -o build/r1-toolbox-linux-arm64 ./cmd
+
+      # 没有产物就直接失败，不留"绿着但没东西"的状态
+      - name: 校验产物（架构 / 可执行 / 动态库可解析）
+        run: |
+          test -x build/r1-toolbox-linux-arm64
+          file build/r1-toolbox-linux-arm64
+          file build/r1-toolbox-linux-arm64 | grep -q 'ARM aarch64'
+          ldd build/r1-toolbox-linux-arm64 | grep -q 'libSDL2'
+          ls -lh build/r1-toolbox-linux-arm64
 
       - name: 上传到 Release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: build/r1-toolbox-linux-arm64
           generate_release_notes: true
-        continue-on-error: true
