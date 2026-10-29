@@ -391,11 +391,16 @@ func DrawTopBarName(c *Canvas, fs *FontSet, th *Theme, cy int, pageName string, 
 // 未激活的用低透明度、激活的满色并加长 —— 底部就是一条"彩色页签"，
 // 既指示位置，也提前告诉人"这一页是什么调子"
 // （青=概览、橙=性能、紫=存储、绿=网络、黄=系统）。
+//
+// 2026-10-29：洋哥说「页签太挤」。原参数 间距 7 / 点宽 7 / 高 3，三个点
+// 挤成一坨 50px 的小横条，像屏幕底部的灰尘而不是指示器。改成
+// 间距 14 / 点宽 8 / 高 4，总宽 70px —— 仍然是居中的一条，但每一格
+// 都独立可辨，激活段（26px）拉长的动画也才看得出来。
 func DrawDots(c *Canvas, accents []RGBA, cur, y int) {
-	const h = 3
-	const gap = 7
-	const wActive = 22
-	const wIdle = 7
+	const h = 4
+	const gap = 14
+	const wActive = 26
+	const wIdle = 8
 	n := len(accents)
 	if n == 0 {
 		return
@@ -431,10 +436,10 @@ func DrawDots(c *Canvas, accents []RGBA, cur, y int) {
 // 不做过渡的话，切换瞬间底部会"啪"地打点。插值之后它是一个会走的指示器。
 // from 格缩短多少，to 格就加长多少 —— 总宽恒定，整条不会左右漂移。
 func DrawDotsT(c *Canvas, accents []RGBA, from, to int, e float64, y int) {
-	const h = 3
-	const gap = 7
-	const wActive = 22
-	const wIdle = 7
+	const h = 4
+	const gap = 14
+	const wActive = 26
+	const wIdle = 8
 	n := len(accents)
 	if n == 0 {
 		return

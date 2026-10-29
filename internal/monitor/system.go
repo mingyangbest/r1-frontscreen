@@ -43,6 +43,11 @@ type SystemMonitor struct {
 	CPUTemp    float64
 	CPUHistory []float64
 
+	// 静态信息：开机后不会变，启动时读一次即固定，不参与每秒采样。
+	// 读不到就是空串，界面显示「—」，绝不编造型号。
+	CPUModel string // /proc/cpuinfo 的 model name（如 "Intel(R) N100"）
+	Kernel   string // /proc/sys/kernel/osrelease（如 "6.18.18.c1126-trim"）
+
 	MemPercent  float64
 	MemUsedGB   float64
 	MemTotalGB  float64 // 内核可见总量（MemTotal，已扣除核显/固件预留）
@@ -97,6 +102,8 @@ type Snapshot struct {
 	CPUCoreNum int
 	CPUTemp    float64
 	CPUHistory []float64
+	CPUModel   string
+	Kernel     string
 
 	MemPercent  float64
 	MemUsedGB   float64
@@ -143,6 +150,8 @@ func (s *SystemMonitor) Snapshot() Snapshot {
 		CPUCoreNum: s.CPUCoreNum,
 		CPUTemp:    s.CPUTemp,
 		CPUHistory: cloneFloats(s.CPUHistory),
+		CPUModel:   s.CPUModel,
+		Kernel:     s.Kernel,
 
 		MemPercent:  s.MemPercent,
 		MemUsedGB:   s.MemUsedGB,
@@ -196,12 +205,42 @@ func clonePairs(in [][2]float64) [][2]float64 {
 }
 
 func NewSystemMonitor() *SystemMonitor {
+	model, kernel := readStaticInfo()
 	return &SystemMonitor{
 		CPUHistory: make([]float64, 0, 30),
 		MemHistory: make([]float64, 0, 30),
 		NetHistory: make([][2]float64, 0, 30),
 		Disk:       NewDiskMonitor(),
+		CPUModel:   model,
+		Kernel:     kernel,
 	}
+}
+
+// readStaticInfo 读开机后不变化的硬件与内核标识。
+//
+// 为什么不走 gopsutil：它没有「CPU 型号」这一项（cpu.Info() 在 x86 上
+// 也只是回读同一个 /proc/cpuinfo），而内核串要的是 osrelease 原文
+// （"6.18.18.c1126-trim" 这种带发行版后缀的版本号，uname -r 等价）。
+// 两处都是单次读取，放在构造期做一次，采样循环里零成本。
+//
+// 读不到就返回空串 —— 设备卡显示「—」。宁可少一行，也不填一个
+// 看起来合理的假型号，这块屏的第一原则是数据可追溯。
+func readStaticInfo() (cpuModel, kernel string) {
+	if b, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			if !strings.HasPrefix(line, "model name") {
+				continue
+			}
+			if i := strings.IndexByte(line, ':'); i >= 0 {
+				cpuModel = strings.TrimSpace(line[i+1:])
+			}
+			break
+		}
+	}
+	if b, err := os.ReadFile("/proc/sys/kernel/osrelease"); err == nil {
+		kernel = strings.TrimSpace(string(b))
+	}
+	return cpuModel, kernel
 }
 
 func (s *SystemMonitor) UpdateCPU() error {

@@ -275,12 +275,14 @@ const (
 	envCardsH = 122
 	envCoresY = 336
 	envCoresH = 102
-	envNetY   = 452
-	envNetH   = 158
-	envDiskY  = 624
-	envDiskH  = 137
-	envPillY  = 782
-	envPillH  = 40
+	// 2026-10-29：首页「存储」卡整块删除（洋哥反馈：容量这种事一年看两次，
+	// 占着 137px 天天在眼皮底下没用）。腾出的空间给网络曲线加高 ——
+	// 网络是这台机器上唯一"随时在变、值得看趋势"的指标。
+	envNetY = 452
+	envNetH = 288
+	// 底部 pill 跟着网络卡走，不在中间留一段断裂的空白
+	envPillY = 754
+	envPillH = 40
 )
 
 func (p *EnvPage) DataRects(d *DrawCtx) []Rect {
@@ -290,7 +292,6 @@ func (p *EnvPage) DataRects(d *DrawCtx) []Rect {
 		{PadX - 6, envCardsY - 6, CardW + 12, envCardsH + 12},
 		{PadX - 6, envCoresY - 6, CardW + 12, envCoresH + 12},
 		{PadX - 6, envNetY - 6, CardW + 12, envNetH + 12},
-		{PadX - 6, envDiskY - 6, CardW + 12, envDiskH + 12},
 		{PadX - 6, envPillY - 6, CardW + 12, envPillH + 12},
 	}
 }
@@ -306,7 +307,6 @@ func (p *EnvPage) CardRects() []Rect {
 		{PadX + 232, envCardsY, 104, envCardsH},
 		{PadX, envCoresY, CardW, envCoresH},
 		{PadX, envNetY, CardW, envNetH},
-		{PadX, envDiskY, CardW, envDiskH},
 		{PadX, envPillY, CardW, envPillH},
 	}
 }
@@ -443,46 +443,12 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 			}
 		}
 		scale *= 1.15
-		// 曲线顶 +96（行2 墨迹底 +87 之下 9px，图形元素不套用 16 的文字间距），
-		// 高 44，底 +140，卡底 +158 → 18
-		c.Curve(PadX+m3Pad, envNetY+100, CardW-2*m3Pad, 40, recv, scale, 60, P.NetDown, 2, 0.26)
-		c.Curve(PadX+m3Pad, envNetY+100, CardW-2*m3Pad, 40, send, scale, 60, P.NetUp, 2, 0)
-	}
-
-	// ---------------- 存储（容量最大的卷）----------------
-	if c.ClipVisible(PadX, envDiskY, CardW, envDiskH) {
-		m3Card(c, d, PadX, envDiskY, CardW, envDiskH, huePurple, "存储")
-		vols := m.Disk.GetVolumes()
-		if len(vols) == 0 {
-			DrawText(c, fs, "未检测到存储卷", PadX+m3Pad, envDiskY+68, FzSmall, th.Dim)
-		} else {
-			// 按总容量降序取最大卷 —— /vol1 这类主数据卷排在系统盘前面
-			big := vols[0]
-			for _, v := range vols[1:] {
-				if v.TotalGB > big.TotalGB {
-					big = v
-				}
-			}
-			if big.Temp > 0 {
-				m3Note(c, fs, PadX+CardW-m3Pad, envDiskY+m3TitleBase, th,
-					fmt.Sprintf("%.0f°C", big.Temp))
-			}
-			// 卷名行盒顶 +52 → 墨迹 [56,73] / bar 顶 +85（底 +91）/
-			// 容量基线 +119（墨迹 [107,119]），卡底 +137 → 18
-			// 容量与百分比走缓动：卷容量变化时数字滚动而不是跳变
-			du := d.Ease("env.du", big.UsedGB)
-			dp := d.Ease("env.dp", big.UsedPercent)
-			DrawTextMixL(c, fs, PadX+m3Pad, envDiskY+52, FzSmall, th.Text,
-				trim(big.VolName, 8))
-			c.Bar(PadX+m3Pad, envDiskY+85, CardW-2*m3Pad, 6, 3, clamp(dp, 0, 100)/100,
-				th.Track, m3Bar(huePurple, dp, 90, th.Danger))
-			DrawPartsL(c, fs, PadX+m3Pad, envDiskY+119, FzTiny, []TPart{
-				{S: fmt.Sprintf("%.0f", du), Col: th.Sub, Latin: true},
-				{S: "/", Col: th.Dim, Latin: true, Gap: 7},
-				{S: fmt.Sprintf("%.0f GB", big.TotalGB), Col: th.Dim, Latin: true, Gap: 7},
-				{S: fmt.Sprintf("%.0f%%", dp), Col: th.Dim, Latin: true, Gap: 10},
-			})
-		}
+		// 曲线顶 +130（速率行墨迹底 +87 之下 43）、高 122，底 +252，卡底 +288 → 36。
+		// 卡高从 158 加到 288 后腾出的空间，一半给"数字区到曲线区"的呼吸
+		// （43px，原来是 13px 贴着走），一半给曲线本身（40 → 122px）——
+		// 40px 时 0.02 和 0.10 MB/s 在视觉上都是"贴底一条线"，等于没画。
+		c.Curve(PadX+m3Pad, envNetY+130, CardW-2*m3Pad, 122, recv, scale, 60, P.NetDown, 2, 0.26)
+		c.Curve(PadX+m3Pad, envNetY+130, CardW-2*m3Pad, 122, send, scale, 60, P.NetUp, 2, 0)
 	}
 
 	// ---------------- 底部双 pill（容器 / 运行时长）----------------
@@ -724,11 +690,12 @@ func NewSysPage(mon *monitor.SystemMonitor, scr *screen.Control) *SysPage {
 func (p *SysPage) PageName() string { return "系统" }
 
 const (
-	syDevY, syDevH   = 104, 140
-	syNetY, syNetH   = 258, 129
-	sySpdY, sySpdH   = 401, 198
-	syCtrlY, syCtrlH = 613, 173
-	syPillY          = 800
+	// 2026-10-29：设备卡由 140 → 156，补 CPU 型号 / 内核两行；其后各卡顺移 16。
+	syDevY, syDevH   = 104, 156
+	syNetY, syNetH   = 274, 129
+	sySpdY, sySpdH   = 417, 198
+	syCtrlY, syCtrlH = 629, 173
+	syPillY          = 816
 )
 
 func (p *SysPage) DataRects(d *DrawCtx) []Rect {
@@ -765,18 +732,36 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 		// 按字符数截断挡不住溢出（旧版就是这样顶出卡片右边缘的）。
 		DrawPartsL(c, fs, PadX+m3Pad, syDevY+85, FzLarge,
 			splitParts(fitText(fs, d.Host, FzLarge, CardW-2*m3Pad), th.Text))
-		// 副标题墨迹顶 +105（主机名墨迹底 +85 之下 20）→ 基线 +122，卡底 +140 → 18
-		//
-		// 这里是**规格卡**，内存写物理安装容量（SMBIOS），和商品页 16 GB 一致；
-		// 运行态「已用 / 内核可见总量」放在详情页内存卡（15.4 GB），两边不混。
+
+		// 两行规格（2026-10-29 洋哥反馈「信息单薄」）：
+		//   行1 FzSmall：系统 · CPU 型号 · 核数
+		//   行2 FzTiny ：内核 · 内存
+		// 只放**读得到真值**的字段：CPU 型号与内核串来自 /proc，读不到给「—」；
+		// 内存写物理安装容量（SMBIOS），与商品页 16 GB 一致，运行态
+		// 「已用 / 内核可见总量」仍在详情页内存卡（15.4 GB），两边不混。
+		model := m.CPUModel
+		if model == "" {
+			model = "—"
+		}
+		DrawPartsL(c, fs, PadX+m3Pad, syDevY+112, FzSmall, []TPart{
+			{S: "飞牛 fnOS", Col: th.Dim},
+			{S: fitText(fs, model, FzSmall, 150), Col: th.Dim, Latin: true, Gap: 9},
+			{S: fmt.Sprintf("%d 核", coreCount(m)), Col: th.Dim, Gap: 9},
+		})
+
 		memTxt := fmt.Sprintf("%.1f GB", m.MemTotalGB)
 		if m.MemPhysGB > 0 {
 			memTxt = fmt.Sprintf("%.0f GB", m.MemPhysGB)
 		}
-		DrawPartsL(c, fs, PadX+m3Pad, syDevY+122, FzSmall, []TPart{
-			{S: "飞牛 fnOS", Col: th.Dim},
-			{S: fmt.Sprintf("%d 核", coreCount(m)), Col: th.Dim, Gap: 9},
-			{S: memTxt, Col: th.Dim, Latin: true, Gap: 9},
+		kernel := m.Kernel
+		if kernel == "" {
+			kernel = "—"
+		}
+		DrawPartsL(c, fs, PadX+m3Pad, syDevY+134, FzTiny, []TPart{
+			{S: "内核", Col: th.Faint},
+			{S: fitText(fs, kernel, FzTiny, 190), Col: th.Dim, Latin: true, Gap: 7},
+			{S: "·", Col: th.Faint, Gap: 8},
+			{S: memTxt, Col: th.Dim, Latin: true, Gap: 8},
 		})
 	}
 
