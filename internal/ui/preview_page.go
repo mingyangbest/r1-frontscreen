@@ -16,18 +16,29 @@ package ui
 import (
 	"time"
 
+	"r1-toolbox/internal/config"
 	"r1-toolbox/internal/hardware"
 	"r1-toolbox/internal/monitor"
+	"r1-toolbox/internal/netinfo"
+	"r1-toolbox/internal/screen"
 )
+
+// 背光节点走 /sys/class 软链：真机配置里写死的是 drm/card1/...，
+// 而 card 编号会随驱动探头顺序变化（card0 / card1 都见过），软链最稳。
+// 只在系统页预览时用来读真实亮度（只读，不写硬件）。
+const previewBrightPath = "/sys/class/backlight/intel_backlight/brightness"
 
 // RenderRealPage 用真实采样数据渲染整页（376 × 960，与真机同尺寸）。
 //
-// page：0 = 环境页，1 = 详情页。系统页需要 *screen.Control 驱动背光滑条
-// 与关屏按钮，离屏环境下没有对应的真实状态，不做预览。
+// page：0 = 环境页，1 = 详情页，2 = 系统页。
+//
+// 系统页要读真实背光（滑条位置）、真实令牌（底部 pill）和公网 IP
+// （net 可为 nil，则显示「获取中」），这些只能在设备上取；全程只读。
 //
 // now 由调用方给定：首页大时钟与「夜间窗口」判断都依赖它，
-// 传固定值才能得到可比较的两张图。
-func RenderRealPage(fs *FontSet, mon *monitor.SystemMonitor, page int, now time.Time) *Canvas {
+// 传固定值才能得到可比较的几张图。
+func RenderRealPage(fs *FontSet, mon *monitor.SystemMonitor, page int, now time.Time,
+	net *netinfo.Service) *Canvas {
 	c := NewCanvas(376, 960)
 	d := NewDrawCtx(fs)
 	d.Now = now
@@ -35,16 +46,39 @@ func RenderRealPage(fs *FontSet, mon *monitor.SystemMonitor, page int, now time.
 	// 详情页的风扇行直接调 d.Fan.GetCPUMode()（正式运行时 main 保证非 nil）。
 	// 这里补一个：构造只做 hwmon 路径发现，不写硬件。
 	d.Fan = hardware.NewFanController()
+	d.Net = net
+	// 令牌：真机读的是同一份配置。截图里写「未设置」而真机有令牌，
+	// 这张图就不算真机实况了。
+	if cfg, err := config.Load(); err == nil {
+		d.WebToken = cfg.Web.Token
+	}
 
 	// 与 renderer 的页面背景同款渐变，否则卡片边缘的对比度会失真
 	th := d.Theme
 	c.FillRectGrad(0, 0, 376, 960, th.BgTop, th.BgBot)
 
+	var p Page
 	switch page {
 	case 0:
-		NewEnvPage(mon).Draw(c, d)
+		p = NewEnvPage(mon)
 	case 1:
-		NewDetailPage(mon).Draw(c, d)
+		p = NewDetailPage(mon)
+	case 2:
+		br := hardware.NewBrightnessController(previewBrightPath, 0, 96000)
+		// day/night 传 0：系统页只显示「当前读数」，不走 Target() 那条时段逻辑
+		scr := screen.New(br, 0, 0, nil, nil, nil)
+		p = NewSysPage(mon, scr)
+	default:
+		return c
+	}
+	p.Draw(c, d)
+
+	// 页头（页名 + 右侧手势提示）由 renderer 在页面之外画，非全出血页才有。
+	// 少了它，系统页截图顶部会空出一整块，和真机对不上。
+	if !pageFullTop(p) {
+		if n, ok := p.(Named); ok {
+			DrawTopBarM3(c, fs, th, n.PageName(), hintOf(n.PageName()))
+		}
 	}
 
 	// 页签圆点由 renderer 在页面之外单独画（y=918）。少了它，预览图

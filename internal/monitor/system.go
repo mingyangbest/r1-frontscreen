@@ -473,7 +473,12 @@ func (s *SystemMonitor) UpdateMemory() error {
 		s.MemHistory = s.MemHistory[1:]
 	}
 
-	// buff/cache 是内核页缓存，来自 /proc/meminfo 的真实读数
+	// 缓存 = `free` 的 buff/cache 列。
+	//
+	// 别再"顺手"加 Sreclaimable：gopsutil 在 mem_linux.go 末尾有
+	// `ret.Cached += ret.Sreclaimable`（为了对齐 free 的输出），这里再加一次
+	// 就会重复计入 —— 实测会多报 2.0 GB（9.99 GiB vs free 的 8.02 GiB）。
+	// 当前写法与 `free -m` 的 buff/cache 分毫不差。
 	s.MemCacheGB = float64(v.Buffers+v.Cached) / (1024 * 1024 * 1024)
 
 	if swapErr == nil {

@@ -2,9 +2,11 @@
 //
 // 用法（在设备/带 SDL_ttf 的机器上）：
 //
-//	go run ./cmd/preview                       # 四方案对比图
+//	go run ./cmd/preview                          # 四方案对比图
 //	go run ./cmd/preview -page 0 -out /tmp/env.png      # 环境页（真实数据）
 //	go run ./cmd/preview -page 1 -out /tmp/detail.png   # 详情页（真实数据）
+//	go run ./cmd/preview -page 2 -out /tmp/sys.png      # 系统页（真实数据）
+//	go run ./cmd/preview -all  -out /tmp/shot.png       # 三页一次出，共用同一份快照
 //
 // 只依赖 SDL_ttf 的字体加载（与正式程序同一套 FontSet），
 // 不需要窗口、不需要 framebuffer —— 因此可以在 NAS 上跑，
@@ -27,15 +29,22 @@ import (
 	"github.com/veandco/go-sdl2/ttf"
 
 	"r1-toolbox/internal/monitor"
+	"r1-toolbox/internal/netinfo"
 	"r1-toolbox/internal/ui"
 )
 
 func main() {
 	out := flag.String("out", "/tmp/cpu-variants.png", "输出 PNG 路径")
-	page := flag.Int("page", -1, "渲染真实页面：0=环境 1=详情；-1=四方案对比图")
+	page := flag.Int("page", -1, "渲染真实页面：0=环境 1=详情 2=系统；-1=四方案对比图")
+	all := flag.Bool("all", false, "一次采样渲染全部三页（共用同一份快照，曲线才对得上）")
 	warm := flag.Int("warm", 30, "真实页面模式的采样预热次数（决定 CPU 曲线长度）")
 	interval := flag.Int("interval", 120, "预热采样间隔（毫秒）。出 README 截图时用 2000，与真机 fastEvery 一致，曲线形状才对得上")
+	ver := flag.String("version", "dev", "系统页设备卡显示的版本号，与真机保持同一口径（如 v0.7.0）")
 	flag.Parse()
+
+	// 主程序是在运行时把 version 赋给 ui.Version 的（cmd/main.go），
+	// 预览不走那条路径，得自己赋一次 —— 否则设备卡右上角永远写 "dev"。
+	ui.Version = *ver
 
 	if err := ttf.Init(); err != nil {
 		fmt.Fprintln(os.Stderr, "SDL_ttf 初始化失败：", err)
@@ -50,13 +59,15 @@ func main() {
 	}
 	defer fs.Close()
 
-	// -page 2：一次采样同时出环境页和详情页。两页必须共用同一份快照，
-	// 否则曲线形状对不上，看版式时会误以为"同一台机器两个样"。
-	if *page == 2 {
+	// 三页一次出：必须共用同一份快照，否则曲线形状对不上，
+	// 看版式时会误以为"同一台机器两个样"。
+	if *all {
 		mon := warmUp(*warm, *interval)
 		now := time.Now()
-		writePNG(*out, "-env", ui.RenderRealPage(fs, mon, 0, now))
-		writePNG(*out, "-detail", ui.RenderRealPage(fs, mon, 1, now))
+		net := fetchPublicIP()
+		for i, name := range []string{"-env", "-detail", "-system"} {
+			writePNG(*out, name, ui.RenderRealPage(fs, mon, i, now, net))
+		}
 		return
 	}
 
@@ -64,13 +75,35 @@ func main() {
 	if *page < 0 {
 		c = ui.RenderCPUVariantsDemo(fs)
 	} else {
-		if *page > 1 {
-			fmt.Fprintln(os.Stderr, "暂不支持预览该页（系统页依赖真实背光状态）")
+		if *page > 2 {
+			fmt.Fprintln(os.Stderr, "-page 只支持 0（环境）/ 1（详情）/ 2（系统）")
 			os.Exit(2)
 		}
-		c = ui.RenderRealPage(fs, warmUp(*warm, *interval), *page, time.Now())
+		var net *netinfo.Service
+		if *page == 2 {
+			net = fetchPublicIP()
+		}
+		c = ui.RenderRealPage(fs, warmUp(*warm, *interval), *page, time.Now(), net)
 	}
 	writePNG(*out, "", c)
+}
+
+// fetchPublicIP 起一次真实查询并等待首个结果。
+//
+// 系统页的「公网」行有三态（获取中/明文/获取失败），如果不实际查一次，
+// 截图会一直停在"获取中" —— 而真机上它是几秒内就出结果的。
+// 查不到就让它显示「获取失败」，也不编一个假 IP。
+func fetchPublicIP() *netinfo.Service {
+	net := netinfo.New()
+	net.Start()
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) {
+		if pi := net.PublicIP(); !pi.TriedAt.IsZero() {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return net
 }
 
 // warmUp 先真采样若干轮：CPU 历史是 2 秒一点、共 30 点，
