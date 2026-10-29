@@ -42,6 +42,14 @@ type DrawCtx struct {
 	// dataGen 每完成一次数据采样自增。数字类内容散落在整页，
 	// 代数一变就整页重画，比逐块去猜哪里变了更简单也更可靠。
 	dataGen uint64
+
+	// ---- 触摸按压反馈 ----
+	//
+	// 点到卡片时给一次 260ms 的亮度微脉冲（很轻，峰值只有 5% 白），
+	// 这是"屏幕响应了我"最便宜的证明。PressOverlay 在绘制卡片时调用，
+	// 命中则返回当前脉冲强度并顺带声明本帧需要重绘。
+	PressX, PressY int
+	PressAt        time.Time
 }
 
 // BumpData 数据采样完成后调用，宣告"屏幕上的数字全部需要刷新"
@@ -137,6 +145,40 @@ func (d *DrawCtx) NeedsAnim() bool { return d.dirty }
 // 只在首页调用，其他页仍走 8fps 静止档以省 CPU。
 func (d *DrawCtx) KeepAnim() { d.dirty = true }
 
+// pressDur 按压脉冲时长（秒）
+const pressDur = 0.26
+
+// RegisterPress 记录一次点击（dispatchTap 调用，点击落点）
+func (d *DrawCtx) RegisterPress(x, y int) {
+	d.PressX, d.PressY, d.PressAt = x, y, time.Now()
+}
+
+// PressOverlay 点击落在 (x,y,w,h) 内时返回当前脉冲强度 0..1，
+// 否则返回 0。脉冲在前 pressDur 内线性衰减；结束后再多触发一帧
+// 把残余提亮清掉 —— 不补这一帧，跳帧机制会让卡片永久停在最后一丝亮。
+func (d *DrawCtx) PressOverlay(x, y, w, h int) float64 {
+	if d.PressAt.IsZero() {
+		return 0
+	}
+	el := time.Since(d.PressAt).Seconds()
+	if el < 0 {
+		return 0
+	}
+	if el > pressDur+0.1 {
+		d.PressAt = time.Time{}
+		return 0
+	}
+	if x > d.PressX || d.PressX >= x+w || y > d.PressY || d.PressY >= y+h {
+		return 0
+	}
+	d.dirty = true
+	d.easing = true // 让局部重绘接管：被按的卡都在 DataRects 里
+	if el > pressDur {
+		return 0 // 收尾帧：只负责把画面清干净
+	}
+	return (1 - el/pressDur) * 0.055
+}
+
 // WeatherNow 取天气快照（无服务时返回零值）
 func (d *DrawCtx) WeatherNow() netinfo.Weather {
 	if d.Net == nil {
@@ -161,6 +203,16 @@ type Named interface {
 // Tappable 可选实现：接收点击
 type Tappable interface {
 	Tap(x, y int, d *DrawCtx)
+}
+
+// Staggered 可选实现：声明入场编排的动画单元（页面坐标矩形，按浮入顺序）。
+//
+// 换页滑动结束后，渲染器把整页快照按这些矩形切成子图，
+// 逐个「淡入 + 上浮 10px」错峰浮入 —— Material 3 的 container 入场节奏。
+// 渲染期间页面 Draw 不会跑（走快照 blit），所以这些矩形必须覆盖
+// 页面上所有内容；矩形之外的区域在编排期间保持背景。
+type Staggered interface {
+	CardRects() []Rect
 }
 
 // 曲线量程档位：量化到固定档，既有起伏又不会频繁抖动

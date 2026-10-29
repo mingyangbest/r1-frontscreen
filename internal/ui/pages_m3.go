@@ -28,6 +28,7 @@ package ui
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"r1-toolbox/internal/monitor"
@@ -132,9 +133,97 @@ const (
 
 // m3Card 容器卡 + 标题（FzSmall + 1px 字距，基线 y+m3TitleBase）
 // 返回标题墨迹宽度，方便需要紧跟标题追加小字时不用再猜坐标。
-func m3Card(c *Canvas, fs *FontSet, x, y, w, h int, hue m3Hue, title string) int {
-	c.FillRoundRect(x, y, w, h, m3Rad, hue.bg)
-	return drawTracked(c, fs, title, x+m3Pad, y+m3TitleBase, FzSmall, hue.hi, 1)
+//
+// 卡面走烘焙缓存（cardSkin）：渐变光感只在首次出现时渲染一次，
+// 之后每帧是一次 blit —— 质感免费，这是"CPU ≤5%"约束下的唯一打法。
+func m3Card(c *Canvas, d *DrawCtx, x, y, w, h int, hue m3Hue, title string) int {
+	c.DrawSprite(cardSkin(w, h, m3Rad, hue.bg), x, y)
+	// 按压脉冲：点到这张卡时叠一层极淡的白，260ms 衰减
+	if ov := d.PressOverlay(x, y, w, h); ov > 0 {
+		c.FillRoundRect(x, y, w, h, m3Rad, WithA(d.Theme.Text, uint8(ov*255+0.5)))
+	}
+	return drawTracked(c, d.Fonts, title, x+m3Pad, y+m3TitleBase, FzSmall, hue.hi, 1)
+}
+
+// cardSkinKey 烘焙缓存键：形状 + 颜色都参与（主题切换颜色会变）
+type cardSkinKey struct {
+	w, h, r int
+	bg      uint32
+}
+
+// cardSkin 卡面烘焙：纯色底 + 顶部提亮渐隐 + 底部压暗渐隐。
+//
+// 光感来自"上亮下暗"的纵向渐变 —— M3 container 的标准做法。
+// 不用 StrokeRoundRect 收边：它的环带有一半落在卡片圆角之外的透明区，
+// 而 Blend 会把那里写成不透明像素，烘焙层边缘会多出一圈毛刺。
+var (
+	skinMu    sync.Mutex
+	skinCache = map[cardSkinKey]*Sprite{}
+)
+
+func cardSkin(w, h, r int, bg RGBA) *Sprite {
+	key := cardSkinKey{w, h, r, uint32(bg.R)<<16 | uint32(bg.G)<<8 | uint32(bg.B)}
+	skinMu.Lock()
+	if sp, ok := skinCache[key]; ok {
+		skinMu.Unlock()
+		return sp
+	}
+	skinMu.Unlock()
+
+	off := NewCanvas(w, h)
+	off.FillRoundRect(0, 0, w, h, r, bg)
+
+	// 顶部提亮渐隐：光源在正上方，卡沿先亮起来再化进卡面。
+	// 内联逐像素处理而不是走遮罩 API —— 遮罩 Blend 会把圆角外的
+	// 透明像素写成不透明，烘焙层边缘就毁了。
+	fade := h / 2
+	if fade > 72 {
+		fade = 72
+	}
+	lit := Lit(bg, 0.16)
+	for j := 0; j < fade; j++ {
+		t := 1 - float64(j)/float64(fade)
+		k := t * t
+		row := j * w * 4
+		for i := 0; i < w; i++ {
+			p := row + i*4
+			if off.Pix[p+3] == 0 {
+				continue
+			}
+			off.Pix[p] = uint8(float64(off.Pix[p]) + (float64(lit.R)-float64(off.Pix[p]))*k + 0.5)
+			off.Pix[p+1] = uint8(float64(off.Pix[p+1]) + (float64(lit.G)-float64(off.Pix[p+1]))*k + 0.5)
+			off.Pix[p+2] = uint8(float64(off.Pix[p+2]) + (float64(lit.B)-float64(off.Pix[p+2]))*k + 0.5)
+		}
+	}
+	// 底部压暗渐隐：与顶部提亮对偶，卡才"坐得住"而不是飘在背景上
+	bot := h / 3
+	if bot > 56 {
+		bot = 56
+	}
+	for j := 0; j < bot; j++ {
+		yy := h - 1 - j
+		t := 1 - float64(j)/float64(bot)
+		k := t * t * 0.30
+		row := yy * w * 4
+		for i := 0; i < w; i++ {
+			p := row + i*4
+			if off.Pix[p+3] == 0 {
+				continue
+			}
+			off.Pix[p] = uint8(float64(off.Pix[p]) * (1 - k))
+			off.Pix[p+1] = uint8(float64(off.Pix[p+1]) * (1 - k))
+			off.Pix[p+2] = uint8(float64(off.Pix[p+2]) * (1 - k))
+		}
+	}
+
+	sp := off.Snapshot(0, 0, w, h)
+	skinMu.Lock()
+	if len(skinCache) > 48 {
+		skinCache = map[cardSkinKey]*Sprite{}
+	}
+	skinCache[key] = sp
+	skinMu.Unlock()
+	return sp
 }
 
 // m3Note 卡头右侧小注：**与标题同基线**右对齐（之前用中心锚，且比标题低 8px，
@@ -206,6 +295,22 @@ func (p *EnvPage) DataRects(d *DrawCtx) []Rect {
 	}
 }
 
+// CardRects 入场编排单元：时钟块 → 三张小卡逐张 → 大卡自上而下 → pill。
+// 覆盖本页全部内容（编排期间页面不跑 Draw，快照之外的区域保持背景）。
+func (p *EnvPage) CardRects() []Rect {
+	const W = 376
+	return []Rect{
+		{0, 0, W, envTopH},
+		{PadX, envCardsY, 104, envCardsH},
+		{PadX + 116, envCardsY, 104, envCardsH},
+		{PadX + 232, envCardsY, 104, envCardsH},
+		{PadX, envCoresY, CardW, envCoresH},
+		{PadX, envNetY, CardW, envNetH},
+		{PadX, envDiskY, CardW, envDiskH},
+		{PadX, envPillY, CardW, envPillH},
+	}
+}
+
 func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 	th, fs := d.Theme, d.Fonts
 	// 取一份值拷贝：采样在后台协程跑，直接读 p.mon 的字段是数据竞争。
@@ -269,8 +374,11 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 		}
 		for i, mc := range cards {
 			cx := PadX + i*(104+12)
-			c.FillRoundRect(cx, envCardsY, 104, envCardsH, m3Rad, mc.hue.bg)
 			// 窄卡内边距 12（外框左缘与其他卡对齐，内部不必用 22）
+			c.DrawSprite(cardSkin(104, envCardsH, m3Rad, mc.hue.bg), cx, envCardsY)
+			if ov := d.PressOverlay(cx, envCardsY, 104, envCardsH); ov > 0 {
+				c.FillRoundRect(cx, envCardsY, 104, envCardsH, m3Rad, WithA(th.Text, uint8(ov*255+0.5)))
+			}
 			drawTracked(c, fs, mc.label, cx+12, envCardsY+40, FzSmall, mc.hue.hi, 1)
 			// 38px 数字基线 +91（墨迹 [57, 86]）；"100%" 实测 78px，可用宽 80
 			// 单位用 FzSmall + Gap 1 紧贴数字：17px 时 % 太小又离得远，
@@ -287,7 +395,7 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 
 	// ---------------- CPU 负载（每核迷你条，单行）----------------
 	if c.ClipVisible(PadX, envCoresY, CardW, envCoresH) {
-		m3Card(c, fs, PadX, envCoresY, CardW, envCoresH, hueTeal, "CPU 负载")
+		m3Card(c, d, PadX, envCoresY, CardW, envCoresH, hueTeal, "CPU 负载")
 		m3Note(c, fs, PadX+CardW-m3Pad, envCoresY+m3TitleBase, th,
 			fmt.Sprintf("负载 %.2f", m.LoadAvg[0]))
 
@@ -313,7 +421,7 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 
 	// ---------------- 网络（双速率 + 双曲线）----------------
 	if c.ClipVisible(PadX, envNetY, CardW, envNetH) {
-		m3Card(c, fs, PadX, envNetY, CardW, envNetH, hueGreen, "网络")
+		m3Card(c, d, PadX, envNetY, CardW, envNetH, hueGreen, "网络")
 		up := d.Ease("env.up", m.NetSendMBps)
 		dn := d.Ease("env.dn", m.NetRecvMBps)
 		// DrawRateRow 的 cy 是数字墨迹垂直中心：两行 cy +54 / +78
@@ -343,7 +451,7 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 
 	// ---------------- 存储（容量最大的卷）----------------
 	if c.ClipVisible(PadX, envDiskY, CardW, envDiskH) {
-		m3Card(c, fs, PadX, envDiskY, CardW, envDiskH, huePurple, "存储")
+		m3Card(c, d, PadX, envDiskY, CardW, envDiskH, huePurple, "存储")
 		vols := m.Disk.GetVolumes()
 		if len(vols) == 0 {
 			DrawText(c, fs, "未检测到存储卷", PadX+m3Pad, envDiskY+68, FzSmall, th.Dim)
@@ -361,15 +469,18 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 			}
 			// 卷名行盒顶 +52 → 墨迹 [56,73] / bar 顶 +85（底 +91）/
 			// 容量基线 +119（墨迹 [107,119]），卡底 +137 → 18
+			// 容量与百分比走缓动：卷容量变化时数字滚动而不是跳变
+			du := d.Ease("env.du", big.UsedGB)
+			dp := d.Ease("env.dp", big.UsedPercent)
 			DrawTextMixL(c, fs, PadX+m3Pad, envDiskY+52, FzSmall, th.Text,
 				trim(big.VolName, 8))
-			c.Bar(PadX+m3Pad, envDiskY+85, CardW-2*m3Pad, 6, 3, big.UsedPercent/100,
-				th.Track, m3Bar(huePurple, big.UsedPercent, 90, th.Danger))
+			c.Bar(PadX+m3Pad, envDiskY+85, CardW-2*m3Pad, 6, 3, clamp(dp, 0, 100)/100,
+				th.Track, m3Bar(huePurple, dp, 90, th.Danger))
 			DrawPartsL(c, fs, PadX+m3Pad, envDiskY+119, FzTiny, []TPart{
-				{S: fmt.Sprintf("%.0f", big.UsedGB), Col: th.Sub, Latin: true},
+				{S: fmt.Sprintf("%.0f", du), Col: th.Sub, Latin: true},
 				{S: "/", Col: th.Dim, Latin: true, Gap: 7},
 				{S: fmt.Sprintf("%.0f GB", big.TotalGB), Col: th.Dim, Latin: true, Gap: 7},
-				{S: fmt.Sprintf("%.0f%%", big.UsedPercent), Col: th.Dim, Latin: true, Gap: 10},
+				{S: fmt.Sprintf("%.0f%%", dp), Col: th.Dim, Latin: true, Gap: 10},
 			})
 		}
 	}
@@ -432,13 +543,23 @@ func (p *DetailPage) DataRects(d *DrawCtx) []Rect {
 	}
 }
 
+// CardRects 入场编排单元：四张大卡自上而下依次浮入
+func (p *DetailPage) CardRects() []Rect {
+	return []Rect{
+		{PadX, dtCpuY, CardW, dtCpuH},
+		{PadX, dtMemY, CardW, dtMemH},
+		{PadX, dtDiskY, CardW, dtDiskH},
+		{PadX, dtTempY, CardW, dtTempH},
+	}
+}
+
 func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 	th, fs := d.Theme, d.Fonts
 	m := p.mon.Snapshot()
 
 	// ---------------- CPU 历史 · 60 秒（大曲线，蓝卡）----------------
 	if c.ClipVisible(PadX, dtCpuY, CardW, dtCpuH) {
-		m3Card(c, fs, PadX, dtCpuY, CardW, dtCpuH, hueBlue, "CPU 历史 · 60 秒")
+		m3Card(c, d, PadX, dtCpuY, CardW, dtCpuH, hueBlue, "CPU 历史 · 60 秒")
 		peak := 0.0
 		for _, v := range m.CPUHistory {
 			if v > peak {
@@ -456,13 +577,13 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 		// 当前值墨迹顶 +148（曲线底 +132 之下 16）→ 基线 +165，卡底 +183 → 18
 		DrawPartsL(c, fs, PadX+m3Pad, dtCpuY+165, FzSmall, []TPart{
 			{S: "当前", Col: th.Dim},
-			{S: fmt.Sprintf("%.0f%%", m.CPUPercent), Col: th.Sub, Latin: true, Gap: 6},
+			{S: fmt.Sprintf("%.0f%%", d.Ease("dt.cp", m.CPUPercent)), Col: th.Sub, Latin: true, Gap: 6},
 		})
 	}
 
 	// ---------------- 内存（绝对量 + 缓存/Swap，紫卡）----------------
 	if c.ClipVisible(PadX, dtMemY, CardW, dtMemH) {
-		tw := m3Card(c, fs, PadX, dtMemY, CardW, dtMemH, huePurple, "内存")
+		tw := m3Card(c, d, PadX, dtMemY, CardW, dtMemH, huePurple, "内存")
 		// 标题后紧跟物理容量：16 GB 的机器内核只报 15.4 GiB（核显/固件预留），
 		// 两个数字都摆出来，才不会让人以为内存"缩水"了
 		if m.MemPhysGB > 0 {
@@ -470,17 +591,19 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 				splitParts(fmt.Sprintf("物理 %.0f GB", m.MemPhysGB), th.Dim))
 		}
 		m3Note(c, fs, PadX+CardW-m3Pad, dtMemY+m3TitleBase, th,
-			fmt.Sprintf("%.0f%%", m.MemPercent))
-		// 大数字基线 +89（墨迹 [56,89]）；单位降两档并用 Gap 顶住，不留大空格
+			fmt.Sprintf("%.0f%%", d.Ease("dt.mp", m.MemPercent)))
+		// 大数字基线 +89（墨迹 [56,89]）；单位降两档并用 Gap 顶住，不留大空格。
+		// 已用容量走缓动：采样更新时数字滚动，不跳变
 		DrawPartsL(c, fs, PadX+m3Pad, dtMemY+89, FzLarge, []TPart{
-			{S: fmt.Sprintf("%.1f", m.MemUsedGB), Col: th.Text, Latin: true},
+			{S: fmt.Sprintf("%.1f", d.Ease("dt.mu", m.MemUsedGB)), Col: th.Text, Latin: true},
 			{S: "GB", Col: th.Sub, Latin: true, Size: FzSmall, Gap: 4},
 			{S: "/", Col: th.Dim, Latin: true, Size: FzBody, Gap: 10},
 			{S: fmt.Sprintf("%.1f", m.MemTotalGB), Col: th.Sub, Latin: true, Gap: 10},
 			{S: "GB", Col: th.Dim, Latin: true, Size: FzSmall, Gap: 4},
 		})
 		// bar 顶 +101（数字墨迹底 +89 之下 12），底 +107
-		c.Bar(PadX+m3Pad, dtMemY+101, CardW-2*m3Pad, 6, 3, m.MemPercent/100,
+		c.Bar(PadX+m3Pad, dtMemY+101, CardW-2*m3Pad, 6, 3,
+			clamp(d.Ease("dt.mp", m.MemPercent), 0, 100)/100,
 			th.Track, m3Bar(huePurple, m.MemPercent, 90, th.Danger))
 		// 缓存行墨迹顶 +123（bar 底 +107 之下 16）→ 基线 +137，卡底 +155 → 18
 		DrawPartsL(c, fs, PadX+m3Pad, dtMemY+137, FzTiny, []TPart{
@@ -495,7 +618,7 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 
 	// ---------------- 磁盘（逐盘容量 + 温度，绿卡）----------------
 	if c.ClipVisible(PadX, dtDiskY, CardW, dtDiskH) {
-		m3Card(c, fs, PadX, dtDiskY, CardW, dtDiskH, hueGreen, "磁盘")
+		m3Card(c, d, PadX, dtDiskY, CardW, dtDiskH, hueGreen, "磁盘")
 		vols := m.Disk.GetVolumes()
 		if len(vols) == 0 {
 			DrawText(c, fs, "未检测到存储卷", PadX+m3Pad, dtDiskY+68, FzSmall, th.Dim)
@@ -520,7 +643,7 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 
 	// ---------------- 温度与风扇（琥珀卡）----------------
 	if c.ClipVisible(PadX, dtTempY, CardW, dtTempH) {
-		m3Card(c, fs, PadX, dtTempY, CardW, dtTempH, hueAmber, "温度与风扇")
+		m3Card(c, d, PadX, dtTempY, CardW, dtTempH, hueAmber, "温度与风扇")
 		cpuT := clamp(d.Ease("dt.ct", m.CPUTemp), 0, 120)
 		diskT := clamp(d.Ease("dt.disk", m.Disk.MaxDiskTemp()), 0, 120)
 		// 双列：列1 x=m3Pad，列2 x=168。
@@ -618,13 +741,24 @@ func (p *SysPage) DataRects(d *DrawCtx) []Rect {
 	}
 }
 
+// CardRects 入场编排单元：四张大卡 + 底部 pill
+func (p *SysPage) CardRects() []Rect {
+	return []Rect{
+		{PadX, syDevY, CardW, syDevH},
+		{PadX, syNetY, CardW, syNetH},
+		{PadX, sySpdY, CardW, sySpdH},
+		{PadX, syCtrlY, CardW, syCtrlH},
+		{PadX, syPillY, CardW, 40},
+	}
+}
+
 func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 	th, fs := d.Theme, d.Fonts
 	m := p.mon.Snapshot()
 
 	// ---------------- 设备（蓝卡）----------------
 	if c.ClipVisible(PadX, syDevY, CardW, syDevH) {
-		m3Card(c, fs, PadX, syDevY, CardW, syDevH, hueBlue, "设备")
+		m3Card(c, d, PadX, syDevY, CardW, syDevH, hueBlue, "设备")
 		m3Note(c, fs, PadX+CardW-m3Pad, syDevY+m3TitleBase, th, Version)
 		// 主机名基线 +85（墨迹 [55,85]）—— 标题墨迹底 +36 之下 19。
 		// 按**像素宽度**裁剪：40px 字号下 14 个中文字能铺 500+px，
@@ -648,7 +782,7 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 
 	// ---------------- 网络（绿卡，行内「标签 + 值」；屏上明文，外发截图再打码）----------------
 	if c.ClipVisible(PadX, syNetY, CardW, syNetH) {
-		m3Card(c, fs, PadX, syNetY, CardW, syNetH, hueGreen, "网络")
+		m3Card(c, d, PadX, syNetY, CardW, syNetH, hueGreen, "网络")
 		iface := m.NetIface
 		if iface == "" {
 			iface = "—"
@@ -684,7 +818,7 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 
 	// ---------------- 上传 · 下载（速度大卡，青卡）----------------
 	if c.ClipVisible(PadX, sySpdY, CardW, sySpdH) {
-		m3Card(c, fs, PadX, sySpdY, CardW, sySpdH, hueTeal, "上传 · 下载")
+		m3Card(c, d, PadX, sySpdY, CardW, sySpdH, hueTeal, "上传 · 下载")
 		up := clamp(d.Ease("sy.up", m.NetSendMBps), 0, 1e9)
 		dn := clamp(d.Ease("sy.dn", m.NetRecvMBps), 0, 1e9)
 
@@ -734,7 +868,7 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 
 	// ---------------- 控制（紫卡：亮度滑条带圆钮 + 关屏按钮）----------------
 	if c.ClipVisible(PadX, syCtrlY, CardW, syCtrlH) {
-		m3Card(c, fs, PadX, syCtrlY, CardW, syCtrlH, huePurple, "控制")
+		m3Card(c, d, PadX, syCtrlY, CardW, syCtrlH, huePurple, "控制")
 		// 亮度走 screen.Control：它是背光的唯一状态源，
 		// 直接读硬件会让"Web 已息屏"这件事在界面上不可见。
 		cur := p.scr.Bright()

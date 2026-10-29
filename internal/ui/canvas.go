@@ -1037,13 +1037,18 @@ func (c *Canvas) Snapshot(x, y, w, h int) *Sprite {
 	return sp
 }
 
-// DrawSprite 在 (x,y) 绘制 Sprite（左上角对齐）
+// DrawSprite 在 (x,y) 绘制 Sprite（左上角对齐）。
+//
+// a==255 的不透明像素走直写快路径（入场编排每帧要 blit 2~3 张卡，
+// 卡面 95% 以上的像素都是不透明的，逐像素 float 混合是纯浪费）；
+// 半透明像素（AA 边缘、入场淡入期的全局透明度）走 Blend。
 func (c *Canvas) DrawSprite(s *Sprite, x, y int) {
 	if s == nil || !c.clipVisible(x, y, s.W, s.H) {
 		return
 	}
 	gx0, gx1 := c.clampX(x, x+s.W-1)
 	sy0, _ := c.clampY(y, y+s.H-1)
+	fast := c.ga >= 1
 	for j := sy0 - y; j < s.H; j++ {
 		py := y + j
 		if py < c.clipMinY() || py > c.clipMaxY()-1 {
@@ -1054,6 +1059,12 @@ func (c *Canvas) DrawSprite(s *Sprite, x, y int) {
 			k := row + i*4
 			a := s.Pix[k+3]
 			if a == 0 {
+				continue
+			}
+			if fast && a == 255 {
+				pi := (py*c.W + x + i) << 2
+				c.Pix[pi], c.Pix[pi+1], c.Pix[pi+2], c.Pix[pi+3] =
+					s.Pix[k], s.Pix[k+1], s.Pix[k+2], 255
 				continue
 			}
 			c.Blend(x+i, py, RGBA{s.Pix[k], s.Pix[k+1], s.Pix[k+2], 255}, float64(a)/255)

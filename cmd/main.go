@@ -45,14 +45,18 @@ func genWebToken() (string, error) {
 }
 
 const (
-	// 帧率两档。
+	// 帧率分档。
 	//
 	// 页面滑动单独给 60fps：376px 宽的位移在 0.38s 内完成，
 	// 30fps 只有 11 帧、每帧跳 34px —— 无论缓动怎么调都会"一顿一顿"。
 	//
+	// 入场编排（滑动结束后的卡片错峰浮入）30fps：位移只有 10px，
+	// 30fps 已是丝滑区间，再翻倍只是白烧 CPU。
+	//
 	// 静止（既没有换页也没有缓动）8fps 心跳，配合跳帧机制，
 	// 静态页 8 帧里 7 帧什么都不画，纯粹保触摸响应。
 	fpsSlide = 60
+	fpsEnter = 30
 	fpsEase  = 12
 	fpsIdle  = 8
 )
@@ -172,6 +176,9 @@ func main() {
 	// 系统页协议：关闭屏幕按钮走统一状态机
 	renderer.Ctx.OnScreenOff = func() { screenCtl.Off("界面按钮") }
 
+	// 启动首帧渲染完成后播一次入场编排（卡片错峰浮入）
+	renderer.ArmEnter()
+
 	// ---------------- Web 面板 ----------------
 	if cfg.Web.Enabled && cfg.Web.Token != "" {
 		webServer := web.NewServer(mon, fanCtrl, rgbCtrl, brightness, store, screenCtl)
@@ -206,6 +213,7 @@ func main() {
 	slideDur := time.Second / fpsSlide
 	idleDur := time.Second / fpsIdle
 	easeDur := time.Second / fpsEase
+	enterDur := time.Second / fpsEnter
 
 	configReloadTicker := time.NewTicker(5 * time.Second)
 	defer configReloadTicker.Stop()
@@ -215,6 +223,8 @@ func main() {
 		if screenCtl.IsOff() {
 			return
 		}
+		// 按压脉冲：点到的卡片会闪一层极淡的光（260ms 衰减）
+		renderer.Ctx.RegisterPress(x, y)
 		if tp, ok := renderer.CurrentPage().(ui.Tappable); ok {
 			tp.Tap(x, y, renderer.Ctx)
 			// 点按会改页面状态（风扇模式、亮度读数等），这些不经数据采样，
@@ -382,13 +392,15 @@ func main() {
 
 		// ---------------- 帧率控制 ----------------
 		//
-		// 滑动 60fps（位移敏感）> 数值缓动 12fps（0.16s 过渡落 2 帧）>
-		// 静止 8fps 心跳（配合跳帧，静态页基本零开销，只保触摸响应）。
+		// 滑动 60fps（位移敏感）> 入场编排 30fps（10px 上浮，30 已丝滑）>
+		// 数值缓动 12fps（0.16s 过渡落 2 帧）> 静止 8fps 心跳。
 		target := idleDur
 		if screenCtl.IsOff() {
 			target = time.Second // 息屏时画面全黑，无需高频重绘
 		} else if switching {
 			target = slideDur // 滑动：最高优先级
+		} else if renderer.EnterAnimating() {
+			target = enterDur
 		} else if animating {
 			target = easeDur
 		}

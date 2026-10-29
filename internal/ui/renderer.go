@@ -50,6 +50,18 @@ type Renderer struct {
 	snapFrom *Sprite // 滑出的那一页（换页瞬间截下的当前画面）
 	snapTo   *Sprite // 滑入的那一页（滑动的第一帧渲染一次后截下）
 
+	// ---- 入场编排（滑动结束后的卡片错峰浮入）----
+	//
+	// 页面内容在滑动结束时已定格（数据 2 秒才采样一次），逐帧重画
+	// 纯属浪费 —— 与滑动同样的思路：截一张整页快照，按页面声明的
+	// CardRects 切成子图，逐块「淡入 + 上浮」错峰浮入。
+	// 每帧成本 = 一次背景恢复 + 两三张卡 blit + 按矩形局部上传 ≈ 2~3ms，
+	// 30fps 下只占 CPU 约 2%。
+	pendingEnter bool      // 待触发的入场编排（换页时置位，全屏帧消费）
+	enterAt      time.Time // 编排起点；zero 表示未在进行
+	enterRects   []Rect
+	enterSnaps   []*Sprite
+
 	// screenOff 熄屏状态。
 	//
 	// 用原子而不是普通 bool：写它的是 Web 面板/触摸唤醒所在的协程，
@@ -246,11 +258,98 @@ func (r *Renderer) SwitchPage(dir int) {
 	// 此刻画布上还是"旧页的完整一帧"（上一步渲染留下的），直接截下来复用。
 	r.snapFrom = r.Canvas.Snapshot(0, clipTop, r.Canvas.W, clipBot-clipTop)
 	r.snapTo = nil
+	// 滑动结束后接一段卡片错峰浮入（startEnter 在全屏出口消费这个标志）
+	r.pendingEnter = true
 	logx.Debugf("【页面切换】%d -> %d (dir=%d)", r.animFrom, r.animTo, dir)
 }
 
 // Animating 是否正在切换动画
 func (r *Renderer) Animating() bool { return r.animT > 0 && r.animT < 1 }
+
+// 入场编排参数：错峰 40ms、单卡 380ms、上浮 10px，总时长 ≈ 0.4 + 0.04×n
+const (
+	enterStaggerMs = 40
+	enterDurMs     = 380
+	enterRisePx    = 10
+)
+
+// ArmEnter 请求在下一个全屏帧之后播放入场编排（启动时调用一次）
+func (r *Renderer) ArmEnter() { r.pendingEnter = true }
+
+// EnterAnimating 入场编排是否在进行（主循环据此切 30fps）
+func (r *Renderer) EnterAnimating() bool { return !r.enterAt.IsZero() }
+
+// startEnter 在画布为完整终态的全屏帧之后调用：截整页快照、
+// 按页面声明的 CardRects 切子图，开始错峰浮入。
+func (r *Renderer) startEnter() {
+	p, ok := r.pages[r.cur].(Staggered)
+	if !ok {
+		return
+	}
+	r.enterRects = p.CardRects()
+	full := r.Canvas.Snapshot(0, 0, r.Canvas.W, r.Canvas.H)
+	r.enterSnaps = make([]*Sprite, len(r.enterRects))
+	for i, rc := range r.enterRects {
+		r.enterSnaps[i] = subSprite(full, rc.X, rc.Y, rc.W, rc.H)
+	}
+	r.enterAt = time.Now()
+	logx.Debugf("【入场编排】%d 块 · %.2fs", len(r.enterRects),
+		float64(len(r.enterRects)*enterStaggerMs+enterDurMs)/1000)
+}
+
+// drawEnterFrame 入场编排的单帧：背景恢复 → 各块按进度 blit。
+// 进行中的块记入 uploadRects（按矩形局部上传）；全部完成后置
+// needFull 交回正常的跳帧/局部重绘机制。
+func (r *Renderer) drawEnterFrame() {
+	c := r.Canvas
+	now := time.Now()
+	c.Reset() // 页面内容全部由快照提供，画布只需背景
+
+	allDone := true
+	moving := movingRects[:0]
+	for i, rc := range r.enterRects {
+		el := now.Sub(r.enterAt) - time.Duration(i*enterStaggerMs)*time.Millisecond
+		if el <= 0 {
+			allDone = false
+			continue
+		}
+		t := el.Seconds() / (float64(enterDurMs) / 1000)
+		if t >= 1 {
+			c.DrawSprite(r.enterSnaps[i], rc.X, rc.Y)
+			continue
+		}
+		allDone = false
+		e := easeOutCubic(t)
+		dy := int((1 - e) * enterRisePx)
+		c.SetGlobalAlpha(e)
+		c.DrawSprite(r.enterSnaps[i], rc.X, rc.Y+dy)
+		c.SetGlobalAlpha(1)
+		// 上传矩形覆盖卡的全部可能位置（含上浮轨迹）
+		moving = append(moving, Rect{rc.X, rc.Y - 2, rc.W, rc.H + enterRisePx + 4})
+	}
+	r.uploadRects = append(r.uploadRects[:0], moving...)
+
+	if allDone {
+		r.enterAt = time.Time{}
+		r.enterRects = nil
+		r.enterSnaps = nil
+		// 终态确认：转回正常机制前整屏重建一次，保证逐像素一致
+		r.needFull = true
+	}
+}
+
+// movingRects drawEnterFrame 的复用缓冲（渲染单协程访问，无需加锁）
+var movingRects []Rect
+
+// subSprite 从 src 中裁出 (x,y,w,h) 子图（独立拷贝，行宽收窄）
+func subSprite(src *Sprite, x, y, w, h int) *Sprite {
+	sp := &Sprite{W: w, H: h, Pix: make([]byte, w*h*4)}
+	for j := 0; j < h; j++ {
+		sOff := ((y+j)*src.W + x) << 2
+		copy(sp.Pix[j*w<<2:(j+1)*w<<2], src.Pix[sOff:sOff+w<<2])
+	}
+	return sp
+}
 
 // Tick 推进切换动画。
 //
@@ -380,6 +479,10 @@ func (r *Renderer) Render(d *DrawCtx) {
 		c.Reset()
 		c.BlitOpaque(r.snapFrom, dxFrom, clipTop)
 		c.BlitOpaque(r.snapTo, dxTo, clipTop)
+	} else if r.EnterAnimating() {
+		// ---- 入场编排：卡片错峰浮入（快照 blit，不走页面 Draw）----
+		r.drawEnterFrame()
+		local = true
 	} else if rects, mode := r.planFrame(d); mode == frameLocal {
 		// ---- 局部重绘 ----
 		p := r.pages[r.cur]
@@ -422,6 +525,11 @@ func (r *Renderer) Render(d *DrawCtx) {
 		r.needFull = false
 		// 全屏重画过，天气卡已是最新 —— 刷新指纹，防止下一帧误判"天气变了"。
 		r.lastWx = wxStampOf(d)
+		// 画布此刻是完整终态：换页/启动预约的入场编排在这里起跑
+		if r.pendingEnter {
+			r.pendingEnter = false
+			r.startEnter()
+		}
 	}
 
 	// 顶栏与页签不参与滑动，但同样不能"啪"地跳到新页 —— 让它们随进度过渡。
@@ -456,6 +564,19 @@ func (r *Renderer) Render(d *DrawCtx) {
 			c.SetGlobalAlpha(1)
 		}
 		DrawDotsT(c, pageAccents, r.animFrom, r.animTo, e, 918)
+	} else if r.EnterAnimating() {
+		// 入场编排期：普通页顶栏内容恒定，照常画上（已在起跑帧上传过，
+		// 这里保持画布与屏幕语义一致即可）；环境页是全出血 ——
+		// 顶栏区属于编排单元 0（时钟块），绝不能在这里重画成静态版。
+		if !pageFullTop(r.pages[r.cur]) {
+			DrawTopBarM3(c, r.Fonts, r.theme, pageNameOf(r.pages[r.cur]),
+				hintOf(pageNameOf(r.pages[r.cur])))
+		}
+		acc := pageAccents
+		if len(acc) > len(r.pages) {
+			acc = acc[:len(r.pages)]
+		}
+		DrawDots(c, acc, r.cur, 918)
 	} else if pageFullTop(r.pages[r.cur]) {
 		// 全出血页（环境）：顶栏区由页面自身绘制。
 		// 局部重绘时顶栏只有"分钟"会变 —— 拿分钟做判据，
