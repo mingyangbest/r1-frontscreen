@@ -69,7 +69,8 @@ type SystemMonitor struct {
 	NetTxToday  uint64 // 今日累计发送字节
 	NetHistory  [][2]float64
 
-	LocalIP string
+	LocalIP     string
+	NetLinkMbps int // 主网口协商速率（Mbit/s），0 = 读不到
 
 	// 系统
 	UptimeSec float64 // /proc/uptime，系统开机至今秒数
@@ -125,6 +126,10 @@ type Snapshot struct {
 	NetTxToday  uint64
 	NetHistory  [][2]float64
 	LocalIP     string
+	// NetLinkMbps 主网口协商速率（/sys/class/net/<if>/speed，单位 Mbit/s）；
+	// 0 = 读不到（链路 down / 虚拟口不报速率）。系统页网络卡的两排信号条
+	// 用它点亮 —— 亮几根是真实链路档位，不是随手画的花纹。
+	NetLinkMbps int
 
 	UptimeSec float64
 	LoadAvg   [3]float64
@@ -173,6 +178,7 @@ func (s *SystemMonitor) Snapshot() Snapshot {
 		NetTxToday:  s.NetTxToday,
 		NetHistory:  clonePairs(s.NetHistory),
 		LocalIP:     s.LocalIP,
+		NetLinkMbps: s.NetLinkMbps,
 
 		UptimeSec: s.UptimeSec,
 		LoadAvg:   s.LoadAvg,
@@ -514,6 +520,11 @@ func (s *SystemMonitor) UpdateNetwork() error {
 		return err
 	}
 
+	// 链路速率：只在不报值时保留上一次读数（链路 down 时 sysfs 返回 EINVAL）。
+	if v := ifaceSpeedMbps(s.NetIface); v > 0 {
+		s.NetLinkMbps = v
+	}
+
 	// 当日累计（跨天自动归零，服务重启沿用当日基线）
 	s.trackDay(rx, tx)
 
@@ -667,6 +678,63 @@ func readIfaceCounters(iface string) (rx, tx uint64, err error) {
 		return 0, 0, fmt.Errorf("读取 %s 收发计数失败", iface)
 	}
 	return rx, tx, nil
+}
+
+// ifaceSpeedMbps 主网口协商速率（Mbit/s）。
+//
+// 虚拟接口（ovs 桥、veth、docker0）不报 speed，链路 down 时内核返回 EINVAL，
+// 两种情况都返回 0 —— 界面上就是"一根都没亮"，而不是编一个看起来正常的数字。
+// ifaceSpeedMbps 网口协商速率（Mbit/s），0 = 读不到。
+//
+// 直接读 /sys/class/net/<if>/speed 对普通网口够用，但**对 OVS 网桥无效**：
+// 桥接口本身没有物理层，speed 文件存在却读不出值（read 返回 EINVAL）。
+// 而 R1 的默认路由恰恰指向桥接口 enp2s0-ovs，真正协商速率在它的物理
+// 端口 enp2s0 上（1000）—— 只读桥口的结果是信号条整排不亮，屏幕上
+// 看起来像"网线没插"，这是比不显示更糟的错报。
+//
+// 回退：扫一遍所有**物理**网口（有 device 链接才是真硬件；veth / br-* /
+// docker0 这些虚拟口 speed 恒报 10000，会把结论带偏），取 state=up 且
+// 速率最大的那个。全程只读 sysfs，2 秒一次，开销在微秒级。
+func ifaceSpeedMbps(iface string) int {
+	if v := readSpeedFile(iface); v > 0 {
+		return v
+	}
+	ents, err := os.ReadDir("/sys/class/net")
+	if err != nil {
+		return 0
+	}
+	best := 0
+	for _, e := range ents {
+		name := e.Name()
+		if name == iface {
+			continue
+		}
+		dir := filepath.Join("/sys/class/net", name)
+		if _, err := os.Stat(filepath.Join(dir, "device")); err != nil {
+			continue // 虚拟口，跳过
+		}
+		if b, err := os.ReadFile(filepath.Join(dir, "operstate")); err != nil ||
+			strings.TrimSpace(string(b)) != "up" {
+			continue
+		}
+		if v := readSpeedFile(name); v > best {
+			best = v
+		}
+	}
+	return best
+}
+
+// readSpeedFile 读单个网口的 speed 文件；读不到或非正值一律返回 0。
+func readSpeedFile(iface string) int {
+	b, err := os.ReadFile(filepath.Join("/sys/class/net", iface, "speed"))
+	if err != nil {
+		return 0
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || v <= 0 {
+		return 0
+	}
+	return v
 }
 
 func (s *SystemMonitor) UpdateDisk() error {

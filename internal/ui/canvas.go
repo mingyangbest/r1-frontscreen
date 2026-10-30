@@ -596,6 +596,47 @@ func (c *Canvas) FillCircle(cx, cy, r float64, col RGBA) {
 	}
 }
 
+// FillCrescent 抗锯齿弯月（月牙）：主圆减去一个向右上偏移的挖圆。
+//
+// 画布没有减法混合 —— 先用底色圆「盖」掉一半再去画，会把卡片的纵向渐变
+// 压成一块死色，越界部分还会溢出到卡外。这里的做法是**先算覆盖率再混合**：
+// alpha = cov(主圆) × (1 − cov(挖圆))，一次 Blend 落一个像素，
+// 边缘抗锯齿与 FillCircle 完全同口径（半径外 0.5px 线性过渡）。
+// cutDx/cutDy 是挖圆中心相对主圆中心的偏移，cutR 是挖圆半径。
+func (c *Canvas) FillCrescent(cx, cy, r, cutDx, cutDy, cutR float64, col RGBA) {
+	r2 := r + 1
+	x0, x1 := int(cx-r2), int(cx+r2)
+	y0, y1 := int(cy-r2), int(cy+r2)
+	if !c.clipVisible(x0, y0, x1-x0+1, y1-y0+1) {
+		return
+	}
+	x0, x1 = c.clampX(x0, x1)
+	y0, y1 = c.clampY(y0, y1)
+	ccx, ccy := cx+cutDx, cy+cutDy
+	for yy := y0; yy <= y1; yy++ {
+		py := float64(yy) + 0.5
+		for xx := x0; xx <= x1; xx++ {
+			px := float64(xx) + 0.5
+			covA := r + 0.5 - math.Hypot(px-cx, py-cy)
+			if covA <= 0 {
+				continue
+			}
+			if covA > 1 {
+				covA = 1
+			}
+			covB := cutR + 0.5 - math.Hypot(px-ccx, py-ccy)
+			if covB < 0 {
+				covB = 0
+			} else if covB > 1 {
+				covB = 1
+			}
+			if a := covA * (1 - covB); a > 0.004 {
+				c.Blend(xx, yy, col, a)
+			}
+		}
+	}
+}
+
 // Arc 抗锯齿圆环扇区。角度以弧度计，0 = 12 点方向，顺时针为正。
 func (c *Canvas) Arc(cx, cy, rOut, rIn, aStart, aSweep float64, col RGBA) {
 	if aSweep <= 0 || rOut <= rIn {
@@ -887,8 +928,8 @@ func (c *Canvas) AreaChart(x, y, w, h int, data []float64, maxV float64, window 
 		// 折线
 		c.Blend(px, py, lineCol, 1)
 		if thick >= 1.5 {
-			c.Blend(px, py-1, lineCol, 0.5)
-			c.Blend(px, py+1, lineCol, 0.3)
+			c.Blend(px, py-1, lineCol, 0.45)
+			c.Blend(px, py+1, lineCol, 0.45)
 		}
 	}
 
@@ -950,6 +991,7 @@ func (c *Canvas) Curve(x, y, w, h int, data []float64, maxV float64, window int,
 	baseY := y + h - 1
 
 	cx0, cx1 := c.clampX(x, x+w-1)
+	prevPy := -1
 	for col := cx0 - x; col <= cx1-x; col++ {
 		t := float64(col) / float64(w-1) * float64(window-1)
 		idx := int(t)
@@ -989,11 +1031,22 @@ func (c *Canvas) Curve(x, y, w, h int, data []float64, maxV float64, window int,
 				c.Blend(px, yy, lineCol, fillA*(1-tt*0.85))
 			}
 		}
-		c.Blend(px, py, lineCol, 1)
-		if thick >= 1.5 {
-			c.Blend(px, py-1, lineCol, 0.5)
-			c.Blend(px, py+1, lineCol, 0.3)
+		// 竖直补线：相邻两列之间补满，陡坡才连续（详见 Graph 的说明）
+		lo, hi := py, py
+		if prevPy >= 0 {
+			lo, hi = py, prevPy
+			if lo > hi {
+				lo, hi = hi, lo
+			}
 		}
+		for yy := lo; yy <= hi; yy++ {
+			c.Blend(px, yy, lineCol, 1)
+		}
+		if thick >= 1.5 {
+			c.Blend(px, lo-1, lineCol, 0.45)
+			c.Blend(px, hi+1, lineCol, 0.45)
+		}
+		prevPy = py
 	}
 
 	// 端点小实心点（只给带面积的主曲线，避免两条线各戳一个点）
@@ -1018,9 +1071,217 @@ func (c *Canvas) Curve(x, y, w, h int, data []float64, maxV float64, window int,
 }
 
 // ------------------------------------------------------------
-//  Sprite —— 离屏小图，用于缓存静态元素
+//  PlotFloor —— 曲线区底板
 // ------------------------------------------------------------
 
+var (
+	floorMu    sync.Mutex
+	floorCache = map[[2]int]*Sprite{}
+)
+
+// plotFloorSprite 烘焙「自上而下压暗到近黑」的遮罩：顶行全透明，底行 alpha 242。
+//
+// 参考图里曲线区不是「卡片渐变 + 一层淡色面积」，而是整块往下压暗：
+// 顶行与卡底同色，到基线收敛到 (1,1,1)。所以曲线看着像嵌进卡里的凹槽，
+// 而不是浮在卡面上的一层雾 —— 这是"仪表感"和"糊了一层灰"的分界。
+// 逐帧算 304×110 次混合太贵，和卡面一样烘焙成 Sprite。
+func plotFloorSprite(w, h int) *Sprite {
+	key := [2]int{w, h}
+	floorMu.Lock()
+	if sp, ok := floorCache[key]; ok {
+		floorMu.Unlock()
+		return sp
+	}
+	floorMu.Unlock()
+
+	sp := &Sprite{W: w, H: h, Pix: make([]byte, w*h*4)}
+	for y := 0; y < h; y++ {
+		t := 0.0
+		if h > 1 {
+			t = float64(y) / float64(h-1)
+		}
+		a := uint8(t*242 + 0.5)
+		if a == 0 {
+			continue
+		}
+		for x := 0; x < w; x++ {
+			sp.Pix[(y*w+x)*4+3] = a
+		}
+	}
+	floorMu.Lock()
+	if len(floorCache) > 16 {
+		floorCache = map[[2]int]*Sprite{}
+	}
+	floorCache[key] = sp
+	floorMu.Unlock()
+	return sp
+}
+
+// PlotFloor 画曲线区底板，并在基线压一条同色细线（参考图里"槽底折光"那一笔）。
+//
+// 必须在画曲线**之前**调用，且同一个曲线框只能调一次 —— 叠两次会压两遍。
+func (c *Canvas) PlotFloor(x, y, w, h int, accent RGBA) {
+	if w <= 0 || h <= 1 || !c.clipVisible(x, y, w, h) {
+		return
+	}
+	c.DrawSprite(plotFloorSprite(w, h), x, y)
+	baseY := y + h - 1
+	for gx := 0; gx < w; gx++ {
+		c.Blend(x+gx, baseY, accent, 0.20)
+	}
+}
+
+// Graph 精修稿版曲线：3 条 1/4 网格 + 面积自上而下淡出到 0 + 末端脉冲点。
+// 与 Curve 的区别只有三处，但正是这三处决定了"像仪表"还是"像 AI 画的图"：
+//   1. 网格是 3 条（1/4、2/4、3/4），白 10/255、1px —— 少而淡，是引导线不是刻度
+//   2. 面积从线往下**快速衰减到 0**（不是铺满整个框），底板的"凹槽"由
+//      PlotFloor 负责，两者叠在一起才是参考图那种"线在槽里"的观感
+//   3. 末端一个 r4 实心点 + r11 同色光晕，表示"这条线还在跑"
+func (c *Canvas) Graph(x, y, w, h int, data []float64, maxV float64, window int,
+	line RGBA, fillA float64) {
+
+	if w <= 1 || h <= 1 || len(data) == 0 || !c.clipVisible(x, y, w, h) {
+		return
+	}
+	if window < 2 || len(data) < window {
+		window = len(data)
+	}
+	if window < 2 {
+		return
+	}
+	if maxV <= 0 {
+		for _, v := range data {
+			if v > maxV {
+				maxV = v
+			}
+		}
+		if maxV <= 0 {
+			maxV = 1
+		}
+	}
+
+	// ---- 网格：3 条，白 40/255 ----
+	//
+	// 上一版按参考图取了纯白 255 —— 2 倍图上那三行确实整行 (255,255,255)，
+	// 但落到 376×960 的实机 1px 线上，328px 一条纯白压在深底上会跳得很凶，
+	// 三条一起就是"表格线"而不是"引导线"（洋哥 2026-10-30：白色横线要虚一点）。
+	//
+	// 规范第五节写的是 10/255，先按规范试了一版：在 #0D0E12 底上只抬 5 个
+	// 灰阶，放大看几乎是空的 —— 那是"没有线"，不是"线很虚"。取 40/255：
+	// 底 24 → 60，一眼能定位到曲线处在哪一档，又不抢曲线的注意力。
+	grid := RGBA{255, 255, 255, 40}
+	for i := 1; i <= 3; i++ {
+		gy := y + h*i/4
+		for gx := 0; gx < w; gx++ {
+			c.Blend(x+gx, gy, grid, 1)
+		}
+	}
+
+	n := len(data)
+	start := window - n
+	if start < 0 {
+		start = 0
+	}
+	baseY := y + h - 1
+
+	cx0, cx1 := c.clampX(x, x+w-1)
+	prevPy := -1
+	for col := cx0 - x; col <= cx1-x; col++ {
+		t := float64(col) / float64(w-1) * float64(window-1)
+		idx := int(t)
+		rel := float64(idx) - float64(start)
+		if rel < -1 || rel+1 > float64(n) {
+			continue
+		}
+		i0 := int(rel)
+		i1 := i0 + 1
+		if i0 < 0 {
+			i0 = 0
+		}
+		if i1 >= n {
+			i1 = n - 1
+		}
+		if i0 >= n {
+			continue
+		}
+		f := t - float64(idx)
+		v := data[i0]*(1-f) + data[i1]*f
+		if v < 0 {
+			v = 0
+		}
+		if v > maxV {
+			v = maxV
+		}
+		py := baseY - int(v/maxV*float64(h-1)+0.5)
+		if py < y {
+			py = y
+		}
+		px := x + col
+		// 面积按「本列与上一列中更高的那个点」起算，陡坡处才不会有斜缝
+		areaTop := py
+		if prevPy >= 0 && prevPy < areaTop {
+			areaTop = prevPy
+		}
+		if fillA > 0 {
+			fy0, fy1 := c.clampY(areaTop, baseY)
+			span := float64(baseY - areaTop)
+			if span < 1 {
+				span = 1
+			}
+			for yy := fy0; yy <= fy1; yy++ {
+				tt := float64(yy-areaTop) / span
+				// 同色光只在曲线下方很短一段（实测 40% 处已归零）：
+				// 铺满整个框会把底板的"凹槽"重新糊亮，等于白做。
+				k := 1 - tt/0.45
+				if k <= 0 {
+					break
+				}
+				c.Blend(px, yy, line, fillA*k)
+			}
+		}
+		// 竖直线段：相邻两列之间补满，陡坡才是一条连续的线。
+		// 只画"每列一个点"会把陡坡画成一串虚点 —— 采样越密越像虚线。
+		lo, hi := py, py
+		if prevPy >= 0 {
+			lo, hi = py, prevPy
+			if lo > hi {
+				lo, hi = hi, lo
+			}
+		}
+		for yy := lo; yy <= hi; yy++ {
+			a := 1.0
+			if yy != py {
+				a = 0.9
+			}
+			c.Blend(px, yy, line, a)
+		}
+		c.Blend(px, py-1, line, 0.45)
+		c.Blend(px, hi+1, line, 0.45)
+		prevPy = py
+	}
+
+	// ---- 末端脉冲点 ----
+	last := n - 1
+	lv := data[last]
+	if lv < 0 {
+		lv = 0
+	}
+	if lv > maxV {
+		lv = maxV
+	}
+	lt := 0.0
+	if window > 1 {
+		lt = float64(start+last) / float64(window-1)
+	}
+	lx := float64(x) + lt*float64(w-1)
+	ly := float64(baseY) - lv/maxV*float64(h-1)
+	c.FillCircle(lx, ly, 11, WithA(line, 40))
+	c.FillCircle(lx, ly, 4.2, line)
+}
+
+// ------------------------------------------------------------
+//  Sprite —— 离屏小图，用于缓存静态元素
+// ------------------------------------------------------------
 type Sprite struct {
 	W, H int
 	Pix  []byte

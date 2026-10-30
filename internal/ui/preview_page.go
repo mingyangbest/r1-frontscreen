@@ -81,8 +81,8 @@ func RenderRealPage(fs *FontSet, mon *monitor.SystemMonitor, page int, now time.
 		}
 	}
 
-	// 页签圆点由 renderer 在页面之外单独画（y=918）。少了它，预览图
-	// 和真机全屏截图差一截，拿去做 README 配图会"看着不像"。
-	DrawDots(c, pageAccents, page, 918)
+	// 页签短横由 renderer 在页面之外单独画（y 由页面自己报：环境/详情 908、
+	// 系统 937）。少了它，预览图和真机全屏截图差一截，拿去做 README 配图会"看着不像"。
+	DrawDots(c, pageAccents, page, tabYOf(p))
 	return c
 }

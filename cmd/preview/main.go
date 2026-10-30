@@ -1,8 +1,8 @@
-// Command preview 把 UI 设计稿或真实页面离屏渲染成 PNG。
+// Command preview 把真实页面离屏渲染成 PNG。
 //
 // 用法（在设备/带 SDL_ttf 的机器上）：
 //
-//	go run ./cmd/preview                          # 四方案对比图
+//	go run ./cmd/preview                          # 环境页
 //	go run ./cmd/preview -page 0 -out /tmp/env.png      # 环境页（真实数据）
 //	go run ./cmd/preview -page 1 -out /tmp/detail.png   # 详情页（真实数据）
 //	go run ./cmd/preview -page 2 -out /tmp/sys.png      # 系统页（真实数据）
@@ -13,8 +13,8 @@
 // 不打断正在显示的界面。
 //
 // -page 模式会先真采样一段时间：CPU 历史是 2 秒一个点、共 30 点，
-// 不预热就只能画出一两个点。预热用 120ms 一拍快速累积形状，
-// 数值仍是 /proc 的真实读数，只是时间轴更密。
+// 不预热就只能画出一两个点。预热用 120ms 一拍快速累积形状，数值仍是
+// /proc 的真实读数，只是时间轴更密（出正式截图时用 2000 对齐真机节奏）。
 package main
 
 import (
@@ -35,7 +35,7 @@ import (
 
 func main() {
 	out := flag.String("out", "/tmp/cpu-variants.png", "输出 PNG 路径")
-	page := flag.Int("page", -1, "渲染真实页面：0=环境 1=详情 2=系统；-1=四方案对比图")
+	page := flag.Int("page", 0, "渲染真实页面：0=环境 1=详情 2=系统")
 	all := flag.Bool("all", false, "一次采样渲染全部三页（共用同一份快照，曲线才对得上）")
 	warm := flag.Int("warm", 30, "真实页面模式的采样预热次数（决定 CPU 曲线长度）")
 	interval := flag.Int("interval", 120, "预热采样间隔（毫秒）。出 README 截图时用 2000，与真机 fastEvery 一致，曲线形状才对得上")
@@ -72,19 +72,15 @@ func main() {
 	}
 
 	var c *ui.Canvas
-	if *page < 0 {
-		c = ui.RenderCPUVariantsDemo(fs)
-	} else {
-		if *page > 2 {
-			fmt.Fprintln(os.Stderr, "-page 只支持 0（环境）/ 1（详情）/ 2（系统）")
-			os.Exit(2)
-		}
-		var net *netinfo.Service
-		if *page == 2 {
-			net = fetchPublicIP()
-		}
-		c = ui.RenderRealPage(fs, warmUp(*warm, *interval), *page, time.Now(), net)
+	if *page > 2 {
+		fmt.Fprintln(os.Stderr, "-page 只支持 0（环境）/ 1（详情）/ 2（系统）")
+		os.Exit(2)
 	}
+	var net *netinfo.Service
+	if *page == 2 {
+		net = fetchPublicIP()
+	}
+	c = ui.RenderRealPage(fs, warmUp(*warm, *interval), *page, time.Now(), net)
 	writePNG(*out, "", c)
 }
 

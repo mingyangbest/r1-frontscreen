@@ -121,13 +121,12 @@ func DrawCardTonal(c *Canvas, th *Theme, x, y, w, h int, accent RGBA) {
 	c.FillRoundRect(x, y, w, h, CardRad, WithA(th.Text, 5))
 }
 
-// DrawTopBarM3 三页版顶栏：大页名（左）+ 滑动提示（右），无小时钟。
-// 对照效果稿第 2/3 页：「详情」「滑左翻页」。
+// DrawTopBarM3 三页版页头：顶部小页名 + 左侧大标题 + 右侧滑动提示。
+//
+// 精修稿的页头是"两行"：最上面一行居中的小页名（16px 灰，位置指示），
+// 下面一行左大标题（36px 白）+ 右提示（17px 灰）。
 func DrawTopBarM3(c *Canvas, fs *FontSet, th *Theme, name, hint string) {
-	DrawTextMixL(c, fs, PadX+4, 64, FzMid, th.Text, name)
-	if hint != "" {
-		DrawTextMixRC(c, fs, c.W-20, 62, FzTiny, th.Dim, hint)
-	}
+	DrawTopBarV2(c, fs, name, hint)
 }
 
 // DrawCardTitleT tonal 卡标题：文字直接用卡面色相（提亮保证可读）。
@@ -386,114 +385,18 @@ func DrawTopBarName(c *Canvas, fs *FontSet, th *Theme, cy int, pageName string, 
 //  页面指示器
 // ============================================================
 
-// DrawDots 页面指示器：每一格用它**自己那一页的语义色**。
+// DrawDots 页面指示器（三段短横，见 design.go 的 drawTabsV2）。
 //
-// 未激活的用低透明度、激活的满色并加长 —— 底部就是一条"彩色页签"，
-// 既指示位置，也提前告诉人"这一页是什么调子"
-// （青=概览、橙=性能、紫=存储、绿=网络、黄=系统）。
-//
-// 2026-10-29：洋哥说「页签太挤」。原参数 间距 7 / 点宽 7 / 高 3，三个点
-// 挤成一坨 50px 的小横条，像屏幕底部的灰尘而不是指示器。改成
-// 间距 14 / 点宽 8 / 高 4，总宽 70px —— 仍然是居中的一条，但每一格
-// 都独立可辨，激活段（26px）拉长的动画也才看得出来。
+// 精修稿把"圆点"换成了"三段 28×3 的短横"：宽度恒定、当前页那段直接上
+// 该页的点缀色。旧版"激活段拉长到 26px、其余 8px"的写法会让整条在翻页时
+// 左右漂移，而且 8px 宽的点在 376px 屏上只有 4 个像素的辨识度。
 func DrawDots(c *Canvas, accents []RGBA, cur, y int) {
-	const h = 4
-	const gap = 14
-	const wActive = 26
-	const wIdle = 8
-	n := len(accents)
-	if n == 0 {
-		return
-	}
-	total := 0
-	for i := 0; i < n; i++ {
-		if i == cur {
-			total += wActive
-		} else {
-			total += wIdle
-		}
-	}
-	total += gap * (n - 1)
-	x := (c.W - total) / 2
-	for i := 0; i < n; i++ {
-		col := accents[i]
-		if col.A == 0 {
-			col = RGBA{200, 205, 212, 255}
-		}
-		w := wIdle
-		if i == cur {
-			w = wActive
-			c.FillRoundRect(x, y, w, h, 1, col)
-		} else {
-			c.FillRoundRect(x, y, w, h, 1, WithA(col, 105))
-		}
-		x += w + gap
-	}
+	drawTabsV2(c, accents, cur, y)
 }
 
-// DrawDotsT 换页过程中的页签：当前格的「加长 + 满色」在 from 与 to 之间插值。
-//
-// 不做过渡的话，切换瞬间底部会"啪"地打点。插值之后它是一个会走的指示器。
-// from 格缩短多少，to 格就加长多少 —— 总宽恒定，整条不会左右漂移。
+// DrawDotsT 换页过程中的页签：颜色在 from 与 to 之间插值，长度不变。
 func DrawDotsT(c *Canvas, accents []RGBA, from, to int, e float64, y int) {
-	const h = 4
-	const gap = 14
-	const wActive = 26
-	const wIdle = 8
-	n := len(accents)
-	if n == 0 {
-		return
-	}
-	if from == to || from < 0 || to < 0 || from >= n || to >= n {
-		DrawDots(c, accents, to, y)
-		return
-	}
-	if e < 0 {
-		e = 0
-	}
-	if e > 1 {
-		e = 1
-	}
-
-	grow := float64(wActive - wIdle)
-	widths := make([]float64, n)
-	total := 0.0
-	for i := 0; i < n; i++ {
-		w := float64(wIdle)
-		switch i {
-		case from:
-			w += grow * (1 - e)
-		case to:
-			w += grow * e
-		}
-		widths[i] = w
-		total += w
-	}
-	total += float64(gap * (n - 1))
-
-	x := (float64(c.W) - total) / 2
-	for i := 0; i < n; i++ {
-		col := accents[i]
-		if col.A == 0 {
-			col = RGBA{200, 205, 212, 255}
-		}
-		a := 105.0
-		switch i {
-		case from:
-			a = 255 - 150*e
-		case to:
-			a = 105 + 150*e
-		}
-		if a > 255 {
-			a = 255
-		}
-		w := int(widths[i] + 0.5)
-		if w < 3 {
-			w = 3
-		}
-		c.FillRoundRect(int(x+0.5), y, w, h, 1, WithA(col, uint8(a+0.5)))
-		x += widths[i] + float64(gap)
-	}
+	drawTabsV2T(c, accents, from, to, e, y)
 }
 
 // ============================================================
@@ -606,7 +509,9 @@ type TPart struct {
 	S     string
 	Col   RGBA
 	Latin bool
-	Size  int // 0 表示沿用默认字号
+	// Bold 拉丁粗体（指标大数字用；规范第四节要求数字是全屏最粗的一档）
+	Bold bool
+	Size int // 0 表示沿用默认字号
 	// Gap 段前额外间隙（像素）。混排里靠空格拉开距离是不精确的 ——
 	// 空格宽度随字号线性放大，40px 数字旁边的空格能有 10px，
 	// 小字旁边只有 4px，同一套写法在不同字号下疏密完全不同。
@@ -614,10 +519,10 @@ type TPart struct {
 	Gap int
 }
 
-// drawTracked 逐字绘制并追加字距 track（yBase 为基线，返回总宽）。
+// drawTracked 逐字绘制并追加字距 track（yBase = 基线，返回总宽）。
 //
 // 为什么需要它：SDL_ttf 一次渲染整串时字距完全由字体决定，中文标题在
-// 20~24px 下调完就是字字相接的一整块墨，看着发闷。这里按字推进并追加
+// 18~24px 下调完就是字字相接的一整块墨，看着发闷。这里按字推进并追加
 // track 像素，标题才有呼吸感。
 //
 // 逐字渲染会丢掉拉丁 kerning，所以只用于**标题类短文本**；
@@ -626,14 +531,18 @@ func drawTracked(c *Canvas, fs *FontSet, s string, x, yBase, size int, col RGBA,
 	cx := x
 	for _, r := range s {
 		ch := string(r)
-		var im *glyphImg
+		fam := famCJK
 		if isLatinRune(r) {
+			fam = famLatin
+		}
+		var im *glyphImg
+		if fam == famLatin {
 			im = glyphLatin(fs, size, ch, col)
 		} else {
 			im = glyph(fs, size, ch, col)
 		}
 		if im != nil && im.h > 0 {
-			blitGlyph(c, im, cx, yBase-im.h)
+			blitGlyph(c, im, cx, yBase-baselineOff(fs, fam, size))
 			cx += im.w
 		}
 		cx += track
@@ -728,12 +637,18 @@ func measureParts(fs *FontSet, def int, parts []TPart) (int, int) {
 	for _, p := range parts {
 		sz := partSize(p, def)
 		w += p.Gap
-		if p.Latin {
+		switch {
+		case p.Bold:
+			w += TextWidthB(fs, p.S, sz)
+			if hh := TextHeightB(fs, p.S, sz); hh > h {
+				h = hh
+			}
+		case p.Latin:
 			w += TextWidthL(fs, p.S, sz)
 			if hh := TextHeightL(fs, p.S, sz); hh > h {
 				h = hh
 			}
-		} else {
+		default:
 			w += TextWidth(fs, p.S, sz)
 			if hh := TextHeight(fs, p.S, sz); hh > h {
 				h = hh
@@ -749,11 +664,16 @@ func DrawPartsL(c *Canvas, fs *FontSet, x, yBase, def int, parts []TPart) int {
 	for _, p := range parts {
 		sz := partSize(p, def)
 		cx += p.Gap
-		if p.Latin {
+		switch {
+		case p.Bold:
+			hh := TextHeightB(fs, p.S, sz)
+			DrawTextB(c, fs, p.S, cx, yBase-hh, sz, p.Col)
+			cx += TextWidthB(fs, p.S, sz)
+		case p.Latin:
 			hh := TextHeightL(fs, p.S, sz)
 			DrawTextL(c, fs, p.S, cx, yBase-hh, sz, p.Col)
 			cx += TextWidthL(fs, p.S, sz)
-		} else {
+		default:
 			hh := TextHeight(fs, p.S, sz)
 			DrawText(c, fs, p.S, cx, yBase-hh, sz, p.Col)
 			cx += TextWidth(fs, p.S, sz)
@@ -800,10 +720,14 @@ func inkBoundsParts(fs *FontSet, def int, parts []TPart) (int, int) {
 		sz := partSize(p, def)
 		var im *glyphImg
 		var hh int
-		if p.Latin {
+		switch {
+		case p.Bold:
+			im = glyphBold(fs, sz, p.S, p.Col)
+			hh = TextHeightB(fs, p.S, sz)
+		case p.Latin:
 			im = glyphLatin(fs, sz, p.S, p.Col)
 			hh = TextHeightL(fs, p.S, sz)
-		} else {
+		default:
 			im = glyph(fs, sz, p.S, p.Col)
 			hh = TextHeight(fs, p.S, sz)
 		}
@@ -823,6 +747,171 @@ func inkBoundsParts(fs *FontSet, def int, parts []TPart) (int, int) {
 		bot = top
 	}
 	return top, bot
+}
+
+// ============================================================
+//  墨迹锚版式（精修稿的坐标全是「可见墨迹」坐标）
+//
+//  DrawPartsL 的 yBase 是**行盒底部**，而行盒里带 ascent 空隙 ——
+//  照规范里的「标题墨迹顶 +16」直接当行盒坐标用，每处都会低 3~6px，
+//  一排看下来就是"说不上哪里不对但就是不齐"。
+//  下面三个以墨迹顶为锚，规范里的数值可以直接抄。
+// ============================================================
+
+// inkHeightParts 整行可见墨迹高度
+func inkHeightParts(fs *FontSet, def int, parts []TPart) int {
+	top, bot := inkBoundsParts(fs, def, parts)
+	if bot <= top {
+		return 0
+	}
+	return bot - top
+}
+
+// ------------------------------------------------------------
+//  基线对齐
+//
+//  DrawPartsL 是「按位图底边对齐」的：位图底边 = 基线 + 降部，
+//  而不同字号的降部比例不同。46px 的降部约 11px、17px 的只有 4px，
+//  于是"大数字 + 小单位"按底边对齐时，小单位的基线会比数字低 7px ——
+//  表现出来就是「%」永远吊在数字右下方，像掉下去了一样。
+//
+//  真正的对齐基准是**基线**：每个字号先量一次「H 的墨迹底」当作基线
+//  位置（H 没有降部，墨迹底 = 基线），之后所有段都按它落位。
+// ------------------------------------------------------------
+
+const (
+	famCJK = iota
+	famLatin
+	famBold
+)
+
+type baseKey struct{ fam, size int }
+
+var baseCache = map[baseKey]int{}
+
+// baselineOff 字号 → 「位图顶到基线」的像素数（按字体族各量一次）
+func baselineOff(fs *FontSet, fam, size int) int {
+	key := baseKey{fam, size}
+	if v, ok := baseCache[key]; ok {
+		return v
+	}
+	var im *glyphImg
+	switch fam {
+	case famBold:
+		im = glyphBold(fs, size, "H", colWhite)
+	case famLatin:
+		im = glyphLatin(fs, size, "H", colWhite)
+	default:
+		im = glyph(fs, size, "国", colWhite)
+	}
+	off := 0
+	if im != nil && im.inkH() > 0 {
+		off = im.iy1
+	}
+	baseCache[key] = off
+	return off
+}
+
+func partFam(p TPart) int {
+	switch {
+	case p.Bold:
+		return famBold
+	case p.Latin:
+		return famLatin
+	}
+	return famCJK
+}
+
+func partGlyph(fs *FontSet, p TPart, sz int) *glyphImg {
+	switch {
+	case p.Bold:
+		return glyphBold(fs, sz, p.S, p.Col)
+	case p.Latin:
+		return glyphLatin(fs, sz, p.S, p.Col)
+	}
+	return glyph(fs, sz, p.S, p.Col)
+}
+
+// DrawPartsBase 按**基线**绘制：yBase 是那条基线，不是行盒底边。
+func DrawPartsBase(c *Canvas, fs *FontSet, x, yBase, def int, parts []TPart) int {
+	cx := x
+	for _, p := range parts {
+		sz := partSize(p, def)
+		cx += p.Gap
+		off := baselineOff(fs, partFam(p), sz)
+		switch {
+		case p.Bold:
+			DrawTextB(c, fs, p.S, cx, yBase-off, sz, p.Col)
+			cx += TextWidthB(fs, p.S, sz)
+		case p.Latin:
+			DrawTextL(c, fs, p.S, cx, yBase-off, sz, p.Col)
+			cx += TextWidthL(fs, p.S, sz)
+		default:
+			DrawText(c, fs, p.S, cx, yBase-off, sz, p.Col)
+			cx += TextWidth(fs, p.S, sz)
+		}
+	}
+	return cx - x
+}
+
+// partsInkRise 把「墨迹顶」换算成基线所需的抬升量
+func partsInkRise(fs *FontSet, def int, parts []TPart) int {
+	rise := 0
+	for _, p := range parts {
+		sz := partSize(p, def)
+		im := partGlyph(fs, p, sz)
+		if im == nil || im.inkH() == 0 {
+			continue
+		}
+		if r := baselineOff(fs, partFam(p), sz) - im.iy0; r > rise {
+			rise = r
+		}
+	}
+	return rise
+}
+
+// DrawPartsTop 左对齐，yInk 为**可见墨迹顶部**
+func DrawPartsTop(c *Canvas, fs *FontSet, x, yInk, def int, parts []TPart) int {
+	return DrawPartsBase(c, fs, x, yInk+partsInkRise(fs, def, parts), def, parts)
+}
+
+// DrawPartsTopR 右对齐（rx 为右边界），yInk 为可见墨迹顶部
+func DrawPartsTopR(c *Canvas, fs *FontSet, rx, yInk, def int, parts []TPart) int {
+	w, _ := measureParts(fs, def, parts)
+	return DrawPartsTop(c, fs, rx-w, yInk, def, parts)
+}
+
+// DrawPartsTopC 水平居中，yInk 为可见墨迹顶部
+func DrawPartsTopC(c *Canvas, fs *FontSet, cx, yInk, def int, parts []TPart) int {
+	w, _ := measureParts(fs, def, parts)
+	return DrawPartsTop(c, fs, cx-w/2, yInk, def, parts)
+}
+
+// drawTrackedTop 带字距的标题，yInk 为可见墨迹顶部（返回总宽）。
+func drawTrackedTop(c *Canvas, fs *FontSet, s string, x, yInk, size int, col RGBA, track int) int {
+	if s == "" {
+		return 0
+	}
+	rise := 0
+	for _, r := range s {
+		fam := famCJK
+		if isLatinRune(r) {
+			fam = famLatin
+		}
+		var im *glyphImg
+		if fam == famLatin {
+			im = glyphLatin(fs, size, string(r), col)
+		} else {
+			im = glyph(fs, size, string(r), col)
+		}
+		if im == nil || im.inkH() == 0 {
+			continue
+		}
+		if d := baselineOff(fs, fam, size) - im.iy0; d > rise {
+			rise = d
+		}
+	}
+	return drawTracked(c, fs, s, x, yInk+rise, size, col, track)
 }
 
 // DrawTextMixRC 混排文本：右边界 rx 对齐，且**可见字形垂直中心**落在 cy 上。//

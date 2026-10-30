@@ -43,6 +43,14 @@ var latinLightPaths = []string{
 	"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 }
 
+// 拉丁粗体：精修稿里「指标大数字」是全屏最粗的一档（规范第四节：
+// 卡片数字=最粗体），细体大数字撑不住 46px 的分量，整页会显得没骨头。
+var latinBoldPaths = []string{
+	"/usr/share/fonts/opentype/cantarell/Cantarell-Bold.otf",
+	"/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+	"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+}
+
 func probeFont(paths []string) string {
 	for _, p := range paths {
 		if f, err := ttf.OpenFont(p, 16); err == nil {
@@ -60,10 +68,12 @@ type FontSet struct {
 	cjkPath   string
 	thinPath  string
 	lightPath string
+	boldPath  string
 
 	cjk   map[int]*ttf.Font
 	thin  map[int]*ttf.Font
 	light map[int]*ttf.Font
+	bold  map[int]*ttf.Font
 }
 
 func NewFontSet() *FontSet {
@@ -71,15 +81,20 @@ func NewFontSet() *FontSet {
 		cjk:   map[int]*ttf.Font{},
 		thin:  map[int]*ttf.Font{},
 		light: map[int]*ttf.Font{},
+		bold:  map[int]*ttf.Font{},
 	}
 	fs.cjkPath = probeFont(cjkSearchPaths)
 	fs.thinPath = probeFont(latinThinPaths)
 	fs.lightPath = probeFont(latinLightPaths)
+	fs.boldPath = probeFont(latinBoldPaths)
 	if fs.lightPath == "" {
 		fs.lightPath = fs.cjkPath
 	}
 	if fs.thinPath == "" {
 		fs.thinPath = fs.lightPath
+	}
+	if fs.boldPath == "" {
+		fs.boldPath = fs.lightPath
 	}
 	return fs
 }
@@ -126,8 +141,14 @@ func (f *FontSet) GetLatin(size int) *ttf.Font {
 	return openCached(f.light, f.latinPathFor(size), size)
 }
 
+// GetBold 取拉丁粗体（指标大数字）。取不到粗体时退回常规体 ——
+// 宁可字轻一点，也不能因为缺字体整块不出字。
+func (f *FontSet) GetBold(size int) *ttf.Font {
+	return openCached(f.bold, f.boldPath, size)
+}
+
 func (f *FontSet) Close() {
-	for _, m := range []map[int]*ttf.Font{f.cjk, f.thin, f.light} {
+	for _, m := range []map[int]*ttf.Font{f.cjk, f.thin, f.light, f.bold} {
 		for _, fo := range m {
 			if fo != nil {
 				fo.Close()
@@ -137,6 +158,7 @@ func (f *FontSet) Close() {
 	f.cjk = map[int]*ttf.Font{}
 	f.thin = map[int]*ttf.Font{}
 	f.light = map[int]*ttf.Font{}
+	f.bold = map[int]*ttf.Font{}
 }
 
 // ------------------------------------------------------------
@@ -213,6 +235,17 @@ func glyphLatin(fs *FontSet, size int, s string, col RGBA) *glyphImg {
 		return im
 	}
 	im := renderGlyph(fs.GetLatin(size), s, col)
+	gcache.store(key, im)
+	return im
+}
+
+// glyphBold 拉丁粗体（指标大数字）
+func glyphBold(fs *FontSet, size int, s string, col RGBA) *glyphImg {
+	key := "b|" + strconvItoa(size) + "|" + colorKey(col) + "|" + s
+	if im, ok := gcache.lookup(key); ok {
+		return im
+	}
+	im := renderGlyph(fs.GetBold(size), s, col)
 	gcache.store(key, im)
 	return im
 }
@@ -392,6 +425,23 @@ func TextHeight(fs *FontSet, s string, size int) int {
 // TextHeightL 拉丁字体高度
 func TextHeightL(fs *FontSet, s string, size int) int {
 	return glyphLatin(fs, size, s, RGBA{255, 255, 255, 255}).h
+}
+
+// DrawTextB 拉丁粗体，左上角锚点
+func DrawTextB(c *Canvas, fs *FontSet, s string, x, y, size int, col RGBA) int {
+	im := glyphBold(fs, size, s, col)
+	blitGlyph(c, im, x, y)
+	return im.w
+}
+
+// TextWidthB 拉丁粗体宽度
+func TextWidthB(fs *FontSet, s string, size int) int {
+	return glyphBold(fs, size, s, RGBA{255, 255, 255, 255}).w
+}
+
+// TextHeightB 拉丁粗体高度
+func TextHeightB(fs *FontSet, s string, size int) int {
+	return glyphBold(fs, size, s, RGBA{255, 255, 255, 255}).h
 }
 
 // InkWidth 可见字形宽度（中文字体）—— 用于精确居中 / 对齐 / 装饰线

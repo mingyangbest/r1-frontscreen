@@ -110,14 +110,13 @@ const (
 	clipBot  = 896
 )
 
-// pageAccents 每一页的语义色 —— 用于顶栏页名色标与底部页签。
+// pageAccents 每一页的语义色 —— 用于底部页签与顶栏色标。
 //
-// Material You 三页版（2026-10-28）：三页三色互不相同，
-// 看到青色页签就是环境、橙色是详情、淡蓝是系统。
+// 精修稿锁定：环境=灰绿 SAGE、详情=沙金 SAND、系统=灰蓝 SLATE。
 var pageAccents = []RGBA{
-	P.Mem, // 环境
-	P.Cpu, // 详情
-	P.Sys, // 系统
+	colSage, // 环境
+	colSand, // 详情
+	colSlate, // 系统
 }
 
 // pageAccent 取第 i 页的语义色（越界返回零值，调用方会退化为中性）
@@ -568,7 +567,14 @@ func (r *Renderer) Render(d *DrawCtx) {
 			}
 			c.SetGlobalAlpha(1)
 		}
-		DrawDotsT(c, pageAccents, r.animFrom, r.animTo, e, 918)
+		// 页签 y 按页取：环境/详情 908、系统 937。换页过程中插值，
+		// 否则翻到系统页那一瞬页签会"跳"一下。
+		ty0, ty1 := tabYOf(r.pages[r.animFrom]), tabYOf(r.pages[r.animTo])
+		ty := ty0
+		if ty0 != ty1 {
+			ty = int(float64(ty0) + float64(ty1-ty0)*e + 0.5)
+		}
+		DrawDotsT(c, pageAccents, r.animFrom, r.animTo, e, ty)
 	} else if r.EnterAnimating() {
 		// 入场编排期：普通页顶栏内容恒定，照常画上（已在起跑帧上传过，
 		// 这里保持画布与屏幕语义一致即可）；环境页是全出血 ——
@@ -581,7 +587,7 @@ func (r *Renderer) Render(d *DrawCtx) {
 		if len(acc) > len(r.pages) {
 			acc = acc[:len(r.pages)]
 		}
-		DrawDots(c, acc, r.cur, 918)
+		DrawDots(c, acc, r.cur, tabYOf(r.pages[r.cur]))
 	} else if pageFullTop(r.pages[r.cur]) {
 		// 全出血页（环境）：顶栏区由页面自身绘制。
 		// 局部重绘时顶栏只有"分钟"会变 —— 拿分钟做判据，
@@ -602,7 +608,7 @@ func (r *Renderer) Render(d *DrawCtx) {
 			if len(acc) > len(r.pages) {
 				acc = acc[:len(r.pages)]
 			}
-			DrawDots(c, acc, r.cur, 918)
+			DrawDots(c, acc, r.cur, tabYOf(r.pages[r.cur]))
 		}
 	} else {
 		// 普通页顶栏：大页名 + 滑动提示（无小时钟，对照效果稿）。
@@ -624,7 +630,7 @@ func (r *Renderer) Render(d *DrawCtx) {
 			if len(acc) > len(r.pages) {
 				acc = acc[:len(r.pages)]
 			}
-			DrawDots(c, acc, r.cur, 918)
+			DrawDots(c, acc, r.cur, tabYOf(r.pages[r.cur]))
 		}
 	}
 
