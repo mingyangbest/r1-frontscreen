@@ -148,7 +148,7 @@ docker compose up -d screen   # privileged + /dev/fb0 + host 网络
 cmd/main.go            程序入口
 cmd/preview/           设计稿离屏渲染工具（把候选版面画成 PNG，不参与运行、不占屏幕）
 internal/ui/           屏幕渲染：canvas / design（设计常量与阈值取色）/ textrender / theme / widgets / pages
-internal/monitor/      CPU / 内存 / 磁盘 / 温度采集（smartctl 30s TTL 缓存）
+internal/monitor/      CPU / 内存 / 网络 2 秒采样，磁盘 SMART / Docker 60 秒采样（后台协程 + 不可变快照）
 internal/hardware/     背光、风扇曲线、触摸屏、hwmon 发现
 internal/web/          Web 控制面板（gin + 内嵌前端，令牌鉴权）
 internal/netinfo/      网络信息与天气（30 分钟刷新）
