@@ -138,19 +138,19 @@ func (p *EnvPage) FullTop() bool    { return true }
 //	网络        y=586 h=222
 //	药丸        y=838 h=40
 const (
-	envTopH   = 232
-	envClockY = 108
-	envDateY  = 202
-	envCardsY = 236
-	envCardsH = 98
-	envMiniW  = 101
+	envTopH    = 232
+	envClockY  = 108
+	envDateY   = 202
+	envCardsY  = 236
+	envCardsH  = 98
+	envMiniW   = 101
 	envMiniGap = 12
-	envHistY  = 356
-	envHistH  = 208
-	envNetY   = 586
-	envNetH   = 222
-	envPillY  = 838
-	envPillH  = 40
+	envHistY   = 356
+	envHistH   = 208
+	envNetY    = 586
+	envNetH    = 222
+	envPillY   = 838
+	envPillH   = 40
 )
 
 func (p *EnvPage) DataRects(d *DrawCtx) []Rect {

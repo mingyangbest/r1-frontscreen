@@ -114,8 +114,8 @@ const (
 //
 // 精修稿锁定：环境=灰绿 SAGE、详情=沙金 SAND、系统=灰蓝 SLATE。
 var pageAccents = []RGBA{
-	colSage, // 环境
-	colSand, // 详情
+	colSage,  // 环境
+	colSand,  // 详情
 	colSlate, // 系统
 }
 
