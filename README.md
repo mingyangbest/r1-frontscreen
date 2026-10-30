@@ -10,7 +10,7 @@
 
 | 环境（主屏） | 详情 | 系统 |
 |:---:|:---:|:---:|
-| ![环境](docs/screenshots/env.png) | ![详情](docs/screenshots/detail.png) | ![系统](docs/screenshots/system.png) |
+| ![环境](docs/screenshots/env.png?v=080) | ![详情](docs/screenshots/detail.png?v=080) | ![系统](docs/screenshots/system.png?v=080) |
 
 *三页触摸翻页 · 100px 大时钟+天气融合 · 首屏放趋势（CPU 60 秒曲线）、每核明细在详情页 · 每卡一色的低饱和 tonal 配色 · 读数与进度条共用一套阈值色（<50 绿 / ≥50 沙金 / ≥80 珊瑚）· 截图中局域网与公网地址已替换为 RFC 5737 文档保留地址（`192.168.1.10` / `203.0.113.42`），面板令牌按设计本就只显示「已设置 / 未设置」，明文从不上屏*
 
