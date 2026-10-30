@@ -4,6 +4,13 @@
 版本号采用 [语义化版本](https://semver.org/lang/zh-CN/)(主版本.次版本.修订号)。
 每个版本均打有 git tag 并附 [GitHub Release](https://github.com/mingyangbest/r1-frontscreen/releases)。
 
+> **v0.5.0 ~ v0.6.2 的 tag 与 Release 是 2026-10-31 事后补发的**：当时只写了
+> CHANGELOG 就发布了，忘了打 tag。补发时 tag 指向各版本在 CHANGELOG 中
+> 所述改动的**最后一笔提交**（v0.5.0 → `a6dc00f`、v0.6.0 → `0a44727`、
+> v0.6.1 → `ef94275`、v0.6.2 → `4ae05af`），正文取自本文件对应段落，与代码一致。
+> 这些版本**不附预编译二进制**——当时的构建产物没有留存，事后用新代码编出来的包
+> 顶着旧版本号反而误导；需要可直接运行的包请取最新版本。
+
 基于上游 [lemon6515/r1-toolbox-go](https://github.com/lemon6515/r1-toolbox-go) 增强 fork。
 
 ## [v0.8.0] - 2026-10-31
