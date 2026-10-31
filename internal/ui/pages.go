@@ -179,12 +179,27 @@ func (d *DrawCtx) PressOverlay(x, y, w, h int) float64 {
 	return (1 - el/pressDur) * 0.055
 }
 
-// WeatherNow 取天气快照（无服务时返回零值）
+// WxOverride 预览工具用：强制天气图标类型（sun/cloud/rain/snow/fog/
+// thunder/overcast/moon），验收各天气的配色与构图。空串 = 真实天气；
+// 主程序永远不设置它。
+var WxOverride string
+
+// WeatherNow 取天气快照（无服务时返回零值）。
+// WxOverride 优先级最高：preview 的 -wx 参数靠它在没有 Net 服务时
+// 也能强制图标类型（否则 -page 0 下 Net 为 nil，覆盖永远不生效）。
 func (d *DrawCtx) WeatherNow() netinfo.Weather {
-	if d.Net == nil {
-		return netinfo.Weather{}
+	var w netinfo.Weather
+	if d.Net != nil {
+		w = d.Net.Weather()
 	}
-	return d.Net.Weather()
+	if WxOverride != "" {
+		w.Kind = WxOverride
+		w.OK = true
+		if w.Desc == "" {
+			w.Desc = WxOverride
+		}
+	}
+	return w
 }
 
 // ------------------------------------------------------------

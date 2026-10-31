@@ -15,24 +15,28 @@ import (
 //   - 线条仍是细的，构图仍是几何的，不用卡通描边
 // ============================================================
 
-// 天气调色板：固定色，在四套深色主题上都协调（不随主题变色，保证识别度）
+// 天气调色板：固定色，在四套深色主题上都协调（不随主题变色，保证识别度）。
+//
+// 2026-10-31 洋哥：图标放大（r 21→32）后原低饱和色板在大面积上发灰，
+// 整体提饱和/亮度约 25%（A 明快档）。色相语义不变：太阳金 / 雨蓝 / 雪白 /
+// 雾灰蓝 / 霾土黄 / 闪电金。月亮中性白是从参考图逐像素量的实测值，不动。
 var (
-	wxSunHi    = C(243, 193, 105) // 太阳亮面（暖金）
-	wxSunLo    = C(206, 146, 66)  // 太阳暗面 / 光芒
-	wxCloudTop = C(221, 229, 237) // 云顶（偏白）
-	wxCloudBot = C(133, 146, 162) // 云底（偏灰蓝）
-	wxRain     = C(115, 167, 216) // 雨（蓝）
-	wxSnow     = C(223, 237, 248) // 雪（近白）
-	wxFog      = C(157, 171, 184) // 雾（灰蓝）
-	wxHaze     = C(180, 166, 146) // 霾（土黄）
-	wxBolt     = C(250, 208, 106) // 闪电（金）
+	wxSunHi    = C(255, 205, 95)  // 太阳亮面（暖金）
+	wxSunLo    = C(235, 160, 55)  // 太阳暗面 / 光芒
+	wxCloudTop = C(240, 246, 252) // 云顶（偏白）
+	wxCloudBot = C(152, 168, 190) // 云底（偏灰蓝）
+	wxRain     = C(92, 178, 240)  // 雨（蓝）
+	wxSnow     = C(242, 249, 255) // 雪（近白）
+	wxFog      = C(178, 194, 210) // 雾（灰蓝）
+	wxHaze     = C(205, 185, 148) // 霾（土黄）
+	wxBolt     = C(255, 224, 88)  // 闪电（金）
 
 	// 夜间（2026-10-28 洋哥：深夜晴天还挂着大太阳，观感违和 → 加月亮/夜云）
 	// wxMoonHi 实测参考图月牙最亮像素 (246,246,246)、前三 20 像素均值 (232,232,232)
 	// —— 是**中性白**，不是原先那个偏蓝的 (214,222,238)。三个通道必须相等，
 	// 差一个通道值就会在深底上泛出蓝紫边。
 	wxMoonHi = C(244, 244, 244) // 月亮亮面（中性白）
-	wxMoonLo = C(148, 160, 186) // 月亮光晕 / 环形山（灰蓝银）
+	wxMoonLo = C(165, 180, 210) // 月亮光晕 / 环形山（灰蓝银）
 	wxStar   = C(232, 238, 248) // 星（近白银）
 )
 
@@ -122,7 +126,9 @@ func weatherAccent(kind string) RGBA {
 // t 为时间（秒），驱动全部动画。
 func DrawWeatherIcon(c *Canvas, cx, cy int, r float64, kind string, t float64) {
 	fx, fy := float64(cx), float64(cy)
-	if isNight() {
+	// 夜间统一画弯月（规范第七节「右上月牙」）。WxOverride 是预览工具的
+	// 验收入口 —— 强制指定类型时连夜间强制一起跳过，否则白天图标夜里没法验收。
+	if isNight() && WxOverride == "" {
 		// 夜间统一画弯月（规范第七节「右上月牙」）。
 		//
 		// 参考图那一格在「雾」的天气下画的依然是月牙 —— 说明这一格表达的是
@@ -426,15 +432,15 @@ func drawSun(c *Canvas, cx, cy, r, t float64) {
 	breathe := 1 + 0.035*math.Sin(t*0.92)
 	sunDisc(c, cx, cy, r*0.42*breathe)
 
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 12; i++ {
 		// 波峰位置 = 该根的角度 - 传播距离
-		ph := float64(i)/8 - t*0.075
+		ph := float64(i)/12 - t*0.075
 		wv := 0.5 + 0.5*math.Sin(ph*2*math.Pi)
-		a := float64(i) * math.Pi / 4
+		a := float64(i) * math.Pi / 6
 		sin, cos := math.Sin(a), math.Cos(a)
 		l0 := r * 0.61
 		l1 := r * (0.78 + 0.055*wv)
-		c.Line(cx+l0*sin, cy-l0*cos, cx+l1*sin, cy-l1*cos, 2.2,
+		c.Line(cx+l0*sin, cy-l0*cos, cx+l1*sin, cy-l1*cos, 2.8,
 			WithA(wxSunLo, clampByte((0.48+0.47*wv)*255)))
 	}
 }
@@ -443,14 +449,14 @@ func drawSun(c *Canvas, cx, cy, r, t float64) {
 func drawSunCloud(c *Canvas, cx, cy, r, t float64) {
 	scx, scy := cx+r*0.34, cy-r*0.36
 	sunDisc(c, scx, scy, r*0.22*(1+0.045*math.Sin(t*0.72)))
-	for i := 0; i < 6; i++ {
-		ph := float64(i)/6 - t*0.115
+	for i := 0; i < 9; i++ {
+		ph := float64(i)/9 - t*0.115
 		wv := 0.5 + 0.5*math.Sin(ph*2*math.Pi)
-		a := float64(i) * math.Pi / 3
+		a := float64(i) * math.Pi * 2 / 9
 		sin, cos := math.Sin(a), math.Cos(a)
 		l0 := r * 0.30
 		l1 := r * (0.40 + 0.032*wv)
-		c.Line(scx+l0*sin, scy-l0*cos, scx+l1*sin, scy-l1*cos, 2.0,
+		c.Line(scx+l0*sin, scy-l0*cos, scx+l1*sin, scy-l1*cos, 2.6,
 			WithA(wxSunLo, clampByte((0.48+0.47*wv)*255)))
 	}
 	// 云不再整朵刚性平移：三频漂移 + 极缓的呼吸缩放。
@@ -489,7 +495,7 @@ func drawRain(c *Canvas, cx, cy, r, t float64) {
 		y := y0 + yp*span
 		a := math.Sin(ph * math.Pi)
 		l := r * (0.10 + 0.085*ph)
-		c.Line(x, y, x-r*0.035, y+l, 1.7, WithA(wxRain, clampByte(a*238)))
+		c.Line(x, y, x-r*0.035, y+l, 2.2, WithA(wxRain, clampByte(a*238)))
 	}
 }
 
@@ -521,7 +527,7 @@ func drawFog(c *Canvas, cx, cy, r, t float64) {
 		// 三条带的频率、幅度都不同，且两端渐隐（雾带没有"端点"）
 		off := wobble(t+float64(i)*7.3, 0.24+float64(i)*0.08) * r * (0.10 + 0.05*float64(i))
 		w := r * ws[i]
-		fadeLine(c, cx-w/2+off, cx+w/2+off, cy+ys[i], 2.2, wxFog, 205)
+		fadeLine(c, cx-w/2+off, cx+w/2+off, cy+ys[i], 2.8, wxFog, 205)
 	}
 }
 
@@ -556,11 +562,11 @@ func drawThunder(c *Canvas, cx, cy, r, t float64) {
 	// 先描一层更宽的暗边：暗态也能看清形状，亮起时又不会突然变胖
 	for i := 0; i+1 < len(pts); i++ {
 		c.Line(cx+r*pts[i][0], cy+r*pts[i][1], cx+r*pts[i+1][0], cy+r*pts[i+1][1],
-			3.4, WithA(wxBolt, clampByte(br*62)))
+			4.2, WithA(wxBolt, clampByte(br*62)))
 	}
 	for i := 0; i+1 < len(pts); i++ {
 		c.Line(cx+r*pts[i][0], cy+r*pts[i][1], cx+r*pts[i+1][0], cy+r*pts[i+1][1],
-			2.0, WithA(wxBolt, clampByte(br*255)))
+			2.6, WithA(wxBolt, clampByte(br*255)))
 	}
 
 	const n = 4
@@ -571,6 +577,6 @@ func drawThunder(c *Canvas, cx, cy, r, t float64) {
 		y := cy + r*0.12 + yp*r*0.74
 		a := math.Sin(phr*math.Pi) * (0.55 + 0.32*br)
 		l := r * (0.09 + 0.075*phr)
-		c.Line(x, y, x-r*0.035, y+l, 1.7, WithA(wxRain, clampByte(a*255)))
+		c.Line(x, y, x-r*0.035, y+l, 2.2, WithA(wxRain, clampByte(a*255)))
 	}
 }

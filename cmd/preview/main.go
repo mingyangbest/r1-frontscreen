@@ -40,11 +40,13 @@ func main() {
 	warm := flag.Int("warm", 30, "真实页面模式的采样预热次数（决定 CPU 曲线长度）")
 	interval := flag.Int("interval", 120, "预热采样间隔（毫秒）。出 README 截图时用 2000，与真机 fastEvery 一致，曲线形状才对得上")
 	ver := flag.String("version", "dev", "系统页设备卡显示的版本号，与真机保持同一口径（如 v0.7.0）")
+	wx := flag.String("wx", "", "强制天气图标类型：sun/cloud/rain/snow/fog/thunder/overcast/moon（验收配色与构图用）")
 	flag.Parse()
 
 	// 主程序是在运行时把 version 赋给 ui.Version 的（cmd/main.go），
 	// 预览不走那条路径，得自己赋一次 —— 否则设备卡右上角永远写 "dev"。
 	ui.Version = *ver
+	ui.WxOverride = *wx
 
 	if err := ttf.Init(); err != nil {
 		fmt.Fprintln(os.Stderr, "SDL_ttf 初始化失败：", err)
