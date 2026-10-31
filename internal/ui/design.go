@@ -236,25 +236,15 @@ func DMetaR(c *Canvas, fs *FontSet, xRight, yInk int, text string, col RGBA) int
 //  页头
 // ============================================================
 
-// DrawPageLabel 顶部居中的小页名（参考图三页都有，16px 灰）。
+// DrawTopBarV2 非全出血页的页头：左上大标题 + 右上手势提示。
 //
-// 它不是标题 —— 标题在左边（详情/系统）。这一条是"位置指示"，
-// 翻页时最先告诉你现在在哪一页。
-func DrawPageLabel(c *Canvas, fs *FontSet, name string) {
-	if name == "" {
-		return
-	}
-	parts := splitParts(name, colDim)
-	w, _ := measureParts(fs, FzMeta, parts)
-	DrawPartsTop(c, fs, (c.W-w)/2, 12, FzMeta, parts)
-}
-
-// DrawTopBarV2 非全出血页的页头：顶部小页名 + 左侧大标题 + 右侧手势提示。
+// 顶部居中的小页名已删（洋哥 2026-10-31：每页最上面那两个字要去掉）——
+// 它的「位置指示」功能和底部三点页签完全重复，环境页那两个字更是零信息量。
+// 删掉后省出的顶栏高度给了卡间隙（20 → 28），大标题从 84 上移到 56 补位。
 func DrawTopBarV2(c *Canvas, fs *FontSet, name, hint string) {
-	DrawPageLabel(c, fs, name)
-	DrawPartsTop(c, fs, DPadX, 84, FzTitle, splitParts(name, colWhite))
+	DrawPartsTop(c, fs, DPadX, 56, FzTitle, splitParts(name, colWhite))
 	if hint != "" {
-		DrawPartsTopR(c, fs, DPadX+DCardW, 90, FzUnit, splitParts(hint, colDim))
+		DrawPartsTopR(c, fs, DPadX+DCardW, 62, FzUnit, splitParts(hint, colDim))
 	}
 }
 

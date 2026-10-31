@@ -138,18 +138,18 @@ func (p *EnvPage) FullTop() bool    { return true }
 //	网络        y=586 h=222
 //	药丸        y=838 h=40
 const (
-	envTopH    = 232
-	envClockY  = 108
-	envDateY   = 202
-	envCardsY  = 236
+	envTopH    = 204
+	envClockY  = 80
+	envDateY   = 174
+	envCardsY  = 208
 	envCardsH  = 98
 	envMiniW   = 101
 	envMiniGap = 12
-	envHistY   = 356
+	envHistY   = 336
 	envHistH   = 208
-	envNetY    = 586
+	envNetY    = 574
 	envNetH    = 222
-	envPillY   = 838
+	envPillY   = 826
 	envPillH   = 40
 )
 
@@ -183,9 +183,10 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 	// 取一份值拷贝：采样在后台协程跑，直接读 p.mon 的字段是数据竞争。
 	m := p.mon.Snapshot()
 
-	// ---------------- 页名 + 大时钟 + 日期天气 ----------------
+	// ---------------- 大时钟 + 日期天气 ----------------
+	// 顶部居中的小页名「环境」已删（洋哥 2026-10-31）：它只干"告诉你这是
+	// 哪一页"一件事，而底部三点页签干的就是这个。省出的高度给卡间隙。
 	if c.ClipVisible(0, 0, c.W, envTopH) {
-		DrawPageLabel(c, fs, p.PageName())
 
 		// 时钟加粗（洋哥 2026-10-30：首页时间要更"实"）。规范第四节写的是
 		// 「最细体」，实机看细体 100px 在深底上有点飘，粗体更有压场感。
@@ -215,7 +216,7 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 		// 天气图标（右上，昼夜由 isNight 内部判断）。
 		// r 从 16 放到 21（洋哥 2026-10-30：图标太小）。放大后弯月约 21×22、
 		// 太阳光晕约 1.25r≈26，中心 x=335 时右沿 361 仍在 376 屏内。
-		DrawWeatherIcon(c, DPadX+DCardW-17, 90, 21, kind, 2.856)
+		DrawWeatherIcon(c, DPadX+DCardW-17, 62, 21, kind, 2.856)
 	}
 
 	// ---------------- 三张指标小卡 ----------------
@@ -374,9 +375,9 @@ func NewDetailPage(mon *monitor.SystemMonitor) *DetailPage {
 func (p *DetailPage) PageName() string { return "详情" }
 
 const (
-	dtCpuY, dtCpuH   = 136, 182
-	dtMemY, dtMemH   = 338, 160
-	dtDiskY, dtDiskH = 518, 160
+	dtCpuY, dtCpuH   = 112, 182
+	dtMemY, dtMemH   = 322, 160
+	dtDiskY, dtDiskH = 510, 160
 	dtTempY, dtTempH = 698, 150
 )
 
@@ -593,9 +594,9 @@ func (p *SysPage) PageName() string { return "系统" }
 // 结果第二张卡起就整体上移 ——「卡片高度对齐」是硬指标，不能为了
 // 三页底部齐平去改单页布局（系统页本来就比另两页长）。
 const (
-	syDevY, syDevH   = 136, 152
-	syNetY, syNetH   = 308, 140
-	sySpdY, sySpdH   = 468, 200
+	syDevY, syDevH   = 112, 152
+	syNetY, syNetH   = 292, 140
+	sySpdY, sySpdH   = 460, 200
 	syCtrlY, syCtrlH = 688, 170
 	syPillY          = 874
 )
