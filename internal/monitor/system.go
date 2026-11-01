@@ -45,13 +45,21 @@ type SystemMonitor struct {
 
 	// 静态信息：开机后不会变，启动时读一次即固定，不参与每秒采样。
 	// 读不到就是空串，界面显示「—」，绝不编造型号。
-	CPUModel string // /proc/cpuinfo 的 model name（如 "Intel(R) N100"）
-	Kernel   string // /proc/sys/kernel/osrelease（如 "6.18.18.c1126-trim"）
+	CPUModel  string // /proc/cpuinfo 的 model name（如 "Intel(R) N100"）
+	Kernel    string // /proc/sys/kernel/osrelease（如 "6.18.18.c1126-trim"）
+	OSVersion string // /usr/trim/etc/version（fnOS 自有版本文件，如 "1.2.0903"）
+	Model     string // 厂商 + 商品名（如 "HIKSEMI R1"），由 DMI 拼出
+	// BayCount 硬盘盘位数，**按机型映射**（R1 系列 4 盘位）。
+	// 不从 ata_port 数量推断：某版固件少暴露一个端口就会算成 3 盘位，
+	// 那是错数据；未确认的机型返回 0，界面就不显示这一项。
+	BayCount int
 
 	MemPercent  float64
 	MemUsedGB   float64
 	MemTotalGB  float64 // 内核可见总量（MemTotal，已扣除核显/固件预留）
 	MemPhysGB   float64 // 物理安装容量（SMBIOS type 17 汇总）；0 = 读不到
+	MemType     string  // SMBIOS 内存类型（"DDR5"）；空 = 读不到
+	MemSpeedMHz int     // SMBIOS 标称频率（4800）；0 = 读不到
 	MemAvailGB  float64
 	MemHistory  []float64
 	MemCacheGB  float64 // buff/cache（Buffers + Cached）
@@ -105,11 +113,16 @@ type Snapshot struct {
 	CPUHistory []float64
 	CPUModel   string
 	Kernel     string
+	OSVersion  string
+	Model      string
+	BayCount   int
 
 	MemPercent  float64
 	MemUsedGB   float64
 	MemTotalGB  float64
 	MemPhysGB   float64
+	MemType     string
+	MemSpeedMHz int
 	MemAvailGB  float64
 	MemHistory  []float64
 	MemCacheGB  float64
@@ -157,11 +170,16 @@ func (s *SystemMonitor) Snapshot() Snapshot {
 		CPUHistory: cloneFloats(s.CPUHistory),
 		CPUModel:   s.CPUModel,
 		Kernel:     s.Kernel,
+		OSVersion:  s.OSVersion,
+		Model:      s.Model,
+		BayCount:   s.BayCount,
 
 		MemPercent:  s.MemPercent,
 		MemUsedGB:   s.MemUsedGB,
 		MemTotalGB:  s.MemTotalGB,
 		MemPhysGB:   s.MemPhysGB,
+		MemType:     s.MemType,
+		MemSpeedMHz: s.MemSpeedMHz,
 		MemAvailGB:  s.MemAvailGB,
 		MemHistory:  cloneFloats(s.MemHistory),
 		MemCacheGB:  s.MemCacheGB,
@@ -211,7 +229,7 @@ func clonePairs(in [][2]float64) [][2]float64 {
 }
 
 func NewSystemMonitor() *SystemMonitor {
-	model, kernel := readStaticInfo()
+	model, kernel, osVer, devModel, bays := readStaticInfo()
 	return &SystemMonitor{
 		CPUHistory: make([]float64, 0, 30),
 		MemHistory: make([]float64, 0, 30),
@@ -219,6 +237,9 @@ func NewSystemMonitor() *SystemMonitor {
 		Disk:       NewDiskMonitor(),
 		CPUModel:   model,
 		Kernel:     kernel,
+		OSVersion:  osVer,
+		Model:      devModel,
+		BayCount:   bays,
 	}
 }
 
@@ -231,7 +252,7 @@ func NewSystemMonitor() *SystemMonitor {
 //
 // 读不到就返回空串 —— 设备卡显示「—」。宁可少一行，也不填一个
 // 看起来合理的假型号，这块屏的第一原则是数据可追溯。
-func readStaticInfo() (cpuModel, kernel string) {
+func readStaticInfo() (cpuModel, kernel, osVersion, devModel string, bays int) {
 	if b, err := os.ReadFile("/proc/cpuinfo"); err == nil {
 		for _, line := range strings.Split(string(b), "\n") {
 			if !strings.HasPrefix(line, "model name") {
@@ -246,7 +267,42 @@ func readStaticInfo() (cpuModel, kernel string) {
 	if b, err := os.ReadFile("/proc/sys/kernel/osrelease"); err == nil {
 		kernel = strings.TrimSpace(string(b))
 	}
-	return cpuModel, kernel
+	// fnOS 版本走 /usr/trim/etc/version（如 "1.2.0903"），**不是** /etc/os-release
+	// —— 后者是 "Debian GNU/Linux 12"，与用户嘴里的「飞牛版本」不是一回事。
+	// 644 权限、普通用户可读；读不到留空，界面显示「—」。
+	if b, err := os.ReadFile("/usr/trim/etc/version"); err == nil {
+		osVersion = strings.TrimSpace(string(b))
+	}
+	// 设备型号：DMI 的 sys_vendor + product_name。product_name 是厂内代号
+	// （R1 上是 "HS-AFS-R1"），用户不认这个；去掉 "HS-AFS-" 前缀再与厂商名
+	// 拼起来，得到 "HIKSEMI R1"（R1X 同理得 "HIKSEMI R1X"）。
+	// 前缀对不上就原样显示 product_name —— 猜错的型号比不显示更糟。
+	vendor := readTrimmed("/sys/class/dmi/id/sys_vendor")
+	product := readTrimmed("/sys/class/dmi/id/product_name")
+	switch {
+	case product == "":
+		devModel = ""
+	case vendor == "":
+		devModel = product
+	default:
+		code := strings.TrimPrefix(product, "HS-AFS-")
+		devModel = vendor + " " + code
+	}
+	// 盘位按机型映射。R1 系列前面板 4 个 3.5" 位（M.2 走 PCIe，不占盘位）。
+	// R1X 的盘位数未经实机确认，先不给值 —— 宁可不显示，也不写错规格。
+	switch product {
+	case "HS-AFS-R1":
+		bays = 4
+	}
+	return cpuModel, kernel, osVersion, devModel, bays
+}
+
+// readTrimmed 读一个单行文本文件并去空白，读不到返回空串。
+func readTrimmed(path string) string {
+	if b, err := os.ReadFile(path); err == nil {
+		return strings.TrimSpace(string(b))
+	}
+	return ""
 }
 
 func (s *SystemMonitor) UpdateCPU() error {
@@ -406,18 +462,22 @@ func (s *SystemMonitor) getCPUTempFromFile() float64 {
 // 读不到（非 x86 / 权限不足 / SMBIOS 未导出）返回 0，界面自行降级，绝不编造。
 var (
 	physMemOnce sync.Once
-	physMemVal  float64
+	physMemGB   float64
+	physMemType string // "DDR5" 等；读不到为空
+	physMemMHz  int    // 4800 等；读不到为 0
 )
 
-func physicalMemGB() float64 {
-	physMemOnce.Do(func() { physMemVal = readDMIPhysicalMemGB() })
-	return physMemVal
+// physicalMem 返回（物理容量 GB、内存类型、标称频率 MHz）。
+// 三个值同一次 SMBIOS 遍历拿到，缓存一份。
+func physicalMem() (float64, string, int) {
+	physMemOnce.Do(func() { physMemGB, physMemType, physMemMHz = readDMIMem() })
+	return physMemGB, physMemType, physMemMHz
 }
 
-func readDMIPhysicalMemGB() float64 {
+func readDMIMem() (gb float64, typ string, mhz int) {
 	dirs, err := filepath.Glob("/sys/firmware/dmi/entries/17-*")
 	if err != nil {
-		return 0
+		return 0, "", 0
 	}
 	var totalMB uint64
 	for _, dir := range dirs {
@@ -439,11 +499,46 @@ func readDMIPhysicalMemGB() float64 {
 			mb = uint64(size)
 		}
 		totalMB += mb
+		// 0x12 Memory Type / 0x15-0x16 Speed（MT/s），取第一条已插内存。
+		// 同一个数组里可能有空槽，空槽上面 continue 掉了，不会读到脏值。
+		if typ == "" && len(b) > 0x12 {
+			typ = memTypeName(b[0x12])
+		}
+		if mhz == 0 && len(b) > 0x17 {
+			mhz = int(binary.LittleEndian.Uint16(b[0x15:]))
+		}
 	}
 	if totalMB == 0 {
-		return 0
+		return 0, "", 0
 	}
-	return float64(totalMB) / 1024
+	return float64(totalMB) / 1024, typ, mhz
+}
+
+// memTypeName 把 SMBIOS type 17 的 Memory Type 字节转成名字。
+//
+// 这张表在规范里换过几次值（DDR4 比 DDR3 的数值小，DDR5 也有 0x1D / 0x22
+// 两种写法），所以两处都可能出现的一律认下。本机（HS-AFS-R1）实测字节是
+// 0x22，dmidecode 亦报 "Type: DDR5"，对得上。
+//
+// 认不出返回空串 —— 设备卡就不写类型，只写容量，不硬猜。
+func memTypeName(t byte) string {
+	switch t {
+	case 0x12:
+		return "DDR"
+	case 0x13:
+		return "DDR2"
+	case 0x18, 0x1B:
+		return "DDR3"
+	case 0x1A:
+		return "DDR4"
+	case 0x1D, 0x22:
+		return "DDR5"
+	case 0x21:
+		return "LPDDR4"
+	case 0x23:
+		return "LPDDR5"
+	}
+	return ""
 }
 
 func (s *SystemMonitor) UpdateMemory() error {
@@ -452,7 +547,7 @@ func (s *SystemMonitor) UpdateMemory() error {
 		return err
 	}
 	swap, swapErr := mem.SwapMemory()
-	phys := physicalMemGB()
+	phys, memType, memMHz := physicalMem()
 
 	total := float64(v.Total)
 	avail := float64(v.Available)
@@ -470,6 +565,8 @@ func (s *SystemMonitor) UpdateMemory() error {
 	defer s.mu.Unlock()
 	s.MemTotalGB = total / (1024 * 1024 * 1024)
 	s.MemPhysGB = phys
+	s.MemType = memType
+	s.MemSpeedMHz = memMHz
 	s.MemAvailGB = avail / (1024 * 1024 * 1024)
 	s.MemUsedGB = used / (1024 * 1024 * 1024)
 	s.MemPercent = pct

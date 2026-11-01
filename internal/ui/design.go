@@ -253,11 +253,11 @@ func DrawTopBarV2(c *Canvas, fs *FontSet, name, hint string) {
 // 系统页这一条原本写「滑左回首页」—— 但向左滑到底其实是循环回第一页，
 // 提示反而在描述一个不存在的动作。这里改成提示「上滑换主题」：
 // 换主题是个隐藏手势，不给提示没人会发现。
+//
+// 详情页的「滑左翻页」已删（洋哥 2026-11-01）—— 三页之间的翻页是触摸屏
+// 最直觉的动作，不需要文字教；留着反倒像操作说明贴在墙上。
 func hintOf(name string) string {
-	switch name {
-	case "详情":
-		return "滑左翻页"
-	case "系统":
+	if name == "系统" {
 		return "上滑换主题"
 	}
 	return ""

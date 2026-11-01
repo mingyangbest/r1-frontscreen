@@ -21,6 +21,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"r1-toolbox/internal/monitor"
@@ -416,8 +417,13 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 	if c.ClipVisible(DPadX, dtCpuY, DCardW, dtCpuH) {
 		DCardBox(c, d, DPadX, dtCpuY, DCardW, dtCpuH, colMint)
 		DCardTitle(c, fs, DPadX, dtCpuY+13, "CPU 负载", colSlate)
+		// 右上角原来是 load average（1m · 5m）—— 洋哥 2026-11-01 让删掉。
+		// 那个数对服务器有意义，但对墙上这块屏不直观：0.31 是好是坏，
+		// 得先知道它是"平均排队进程数"、还得知道这台机器 4 核。
+		// 换成总占用率，与下面四根条直接呼应，一眼就懂。
+		cpuNow := clamp(d.Ease("dt.cpu", m.CPUPercent), 0, 100)
 		DMetaR(c, fs, DPadX+DCardW, dtCpuY+16,
-			fmt.Sprintf("1m %.2f · 5m %.2f", m.LoadAvg[0], m.LoadAvg[1]), colDim)
+			fmt.Sprintf("总占用 %.0f%%", cpuNow), valColor(cpuNow))
 
 		cores := m.CPUCores
 		n := coreCount(m)
@@ -573,6 +579,27 @@ func fanModeCN(m string) string {
 	}
 }
 
+// shortCPU 取 CPU 型号的最后一段："Intel(R) N100" → "N100"。
+//
+// 设备卡第三行要塞四项（型号/CPU/内存/盘位），品牌前缀在「机器型号已经
+// 写明是谁」的前提下是冗余的；Celeron/Ryzen 这类命名末段本身就是型号。
+func shortCPU(s string) string {
+	f := strings.Fields(cleanCPUModel(s))
+	if len(f) == 0 {
+		return ""
+	}
+	return f[len(f)-1]
+}
+
+// cleanCPUModel 把 cpuinfo 的 "Intel(R) N100" 收拾成 "Intel N100"。
+//
+// 去商标标记（(R)/(TM)/®）与多余空格 —— 省下的宽度让设备卡第三行
+// 塞得下「型号 · CPU · 核数 · 内存」四项，不必再截断。
+func cleanCPUModel(s string) string {
+	s = strings.NewReplacer("(R)", "", "(TM)", "", "®", "", " CPU", "").Replace(s)
+	return strings.Join(strings.Fields(s), " ")
+}
+
 // ============================================================
 //  第 3 页 · 系统
 // ============================================================
@@ -658,39 +685,58 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 	if c.ClipVisible(DPadX, syDevY, DCardW, syDevH) {
 		DCardBox(c, d, DPadX, syDevY, DCardW, syDevH, colSlate)
 		DCardTitle(c, fs, DPadX, syDevY+13, "设备", colSlate)
-		DMetaR(c, fs, DPadX+DCardW, syDevY+16, Version, colDim)
+		// 版本号保留但弱化（洋哥 2026-11-01：版本号是内部信息，别当主角）：
+		// 字号 16 → 15、颜色 colDim → colTab 再暗一档。
+		// 完整版本启动时会打进日志：journalctl -u r1-toolbox | head -3。
+		if Version != "" {
+			DrawPartsTopR(c, fs, DPadX+DCardW-DPad, syDevY+17, FzMini,
+				[]TPart{{S: Version, Col: colTab, Latin: true}})
+		}
 
-		// 主机名：36px 细体，按**像素宽度**裁剪（14 个中文字能铺 500+px）
+		// 主机名：40px 细体，按**像素宽度**裁剪（14 个中文字能铺 500+px）
 		DrawPartsTop(c, fs, DPadX+DPad, syDevY+49, FzPage,
 			splitParts(fitText(fs, d.Host, FzPage, DCardW-2*DPad), colWhite))
 
-		// 两行规格：只放**读得到真值**的字段，读不到给「—」。
-		// 内存写物理安装容量（SMBIOS），与商品页 16 GB 一致；
-		// 运行态「已用 / 内核可见」仍在详情页内存卡，两边不混。
-		model := m.CPUModel
-		if model == "" {
-			model = "—"
+		// 第二行：飞牛版本。内核串已移除（洋哥 2026-11-01）—— patch 号与
+		// 发行版后缀对「这机器跑什么系统」没有帮助，完整串日志里仍有。
+		osVer := m.OSVersion
+		if osVer == "" {
+			osVer = "—"
 		}
 		DrawPartsTop(c, fs, DPadX+DPad, syDevY+91, FzCard, []TPart{
 			{S: "飞牛 fnOS", Col: colDim},
-			{S: fitText(fs, model, FzCard, 150), Col: colDim, Latin: true, Gap: 9},
-			{S: fmt.Sprintf("%d 核", coreCount(m)), Col: colDim, Gap: 9},
+			{S: osVer, Col: colSub, Latin: true, Gap: 8},
 		})
 
+		// 第三行：型号 · CPU · 内存（含类型）· 盘位，一行说清"这是台什么机器"。
+		// 型号取 DMI 拼出的 "HIKSEMI R1"（不是厂内代号 HS-AFS-R1）；
+		// 内存类型与盘位都只写真值，读不到就整项省略，不留占位。
+		devName := m.Model
+		if devName == "" {
+			devName = "—"
+		}
+		spec := []TPart{{S: devName, Col: colSub}}
+		if cpu := shortCPU(m.CPUModel); cpu != "" {
+			spec = append(spec,
+				TPart{S: "·", Col: colTab, Gap: 7},
+				TPart{S: cpu, Col: colSub, Latin: true, Gap: 7})
+		}
 		memTxt := fmt.Sprintf("%.1f GB", m.MemTotalGB)
 		if m.MemPhysGB > 0 {
 			memTxt = fmt.Sprintf("%.0f GB", m.MemPhysGB)
 		}
-		kernel := m.Kernel
-		if kernel == "" {
-			kernel = "—"
+		if m.MemType != "" {
+			memTxt = m.MemType + " " + memTxt
 		}
-		DrawPartsTop(c, fs, DPadX+DPad, syDevY+115, FzMeta, []TPart{
-			{S: "内核", Col: colDim},
-			{S: fitText(fs, kernel, FzMeta, 190), Col: colDim, Latin: true, Gap: 7},
-			{S: "·", Col: colTab, Gap: 8},
-			{S: memTxt, Col: colDim, Latin: true, Gap: 8},
-		})
+		spec = append(spec,
+			TPart{S: "·", Col: colTab, Gap: 7},
+			TPart{S: memTxt, Col: colDim, Latin: true, Gap: 7})
+		if m.BayCount > 0 {
+			spec = append(spec,
+				TPart{S: "·", Col: colTab, Gap: 7},
+				TPart{S: fmt.Sprintf("%d 盘位", m.BayCount), Col: colDim, Gap: 7})
+		}
+		DrawPartsTop(c, fs, DPadX+DPad, syDevY+115, FzMeta, spec)
 	}
 
 	// ---------------- 网络（链路速率 / 公网可达性，信号条表达）----------------

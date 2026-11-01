@@ -54,6 +54,14 @@ func main() {
 	}
 	defer ttf.Quit()
 
+	// 非 root 读不到 /sys/firmware/dmi/entries/17-*/raw（0600），设备卡会退成
+	// 「内核可见容量 15.4 GB」且不显示内存类型/盘位 —— 拍出来的截图与真机不符。
+	// 出 README 图请 sudo 跑；平时看版式无所谓。
+	if os.Geteuid() != 0 {
+		fmt.Fprintln(os.Stderr,
+			"提示：非 root 运行 → SMBIOS 读不到，设备卡内存会显示 15.4 GB（内核可见）而非 DDR5 16 GB（物理）。发布用截图请 sudo。")
+	}
+
 	fs := ui.NewFontSet()
 	if fs.Path() == "" {
 		fmt.Fprintln(os.Stderr, "找不到中文字体，渲染出来的中文会是空白")

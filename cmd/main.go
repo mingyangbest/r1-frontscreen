@@ -80,6 +80,10 @@ func main() {
 
 	ui.Version = version
 
+	// 版本号在屏上被弱化了（用户不需要看它是第几版），但排查时必须能查 ——
+	// 放在启动日志第一行，`journalctl -u r1-toolbox | head -3` 一眼就看到。
+	logx.Printf("R1 FrontScreen %s 启动", version)
+
 	// ---------------- 硬件 ----------------
 	mon := monitor.NewSystemMonitor()
 
