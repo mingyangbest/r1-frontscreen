@@ -1,7 +1,11 @@
 package ui
 
 import (
+	"bytes"
 	"fmt"
+	"strings"
+	"image"
+	"image/png"
 	"os"
 	"sync/atomic"
 	"time"
@@ -31,6 +35,19 @@ type Renderer struct {
 	Ctx    *DrawCtx
 
 	theme *Theme
+	// accents 与 pages 一一对应：页签色随页面显隐/顺序动态生成，
+	// 不能再引用全局 pageAccents（那套下标是"三页全开"的固定布局）
+	accents []RGBA
+	// 页面的构造依赖（applyPages 重建页面列表时用）
+	mon *monitor.SystemMonitor
+	scr *screen.Control
+	// pendingPages 面板请求的页面列表。web 协程只做指针交换，
+	// 真正重建在渲染帧开头执行 —— pages/accents/cur 都只在渲染协程读写
+	pendingPages atomic.Pointer[[]string]
+	// pagesSnap / accentsSnap 当前启用页的只读快照（applyPages 时更新）。
+	// 预览协程只读这两个指针，不碰 pages 本体。
+	pagesSnap   atomic.Pointer[[]string]
+	accentsSnap atomic.Pointer[[]RGBA]
 	pages []Page
 	cur   int
 
@@ -110,21 +127,48 @@ const (
 	clipBot  = 896
 )
 
+// PageNames 规范页名（也是配置里 display.pages 的合法值）。
+// 顺序即语义色的顺序，两表必须同下标。
+var PageNames = []string{"env", "detail", "system"}
+
 // pageAccents 每一页的语义色 —— 用于底部页签与顶栏色标。
 //
 // 精修稿锁定：环境=灰绿 SAGE、详情=沙金 SAND、系统=灰蓝 SLATE。
+// 下标与 PageNames 一一对应；页面的实际顺序/显隐由 r.accents 承载。
 var pageAccents = []RGBA{
-	colSage,  // 环境
-	colSand,  // 详情
-	colSlate, // 系统
+	colSage,  // env
+	colSand,  // detail
+	colSlate, // system
 }
 
-// pageAccent 取第 i 页的语义色（越界返回零值，调用方会退化为中性）
+// pageAccent 取第 i 页（按当前显隐/顺序）的语义色（越界返回零值，退化为中性）
 func (r *Renderer) pageAccent(i int) RGBA {
-	if i < 0 || i >= len(pageAccents) {
+	if i < 0 || i >= len(r.accents) {
 		return RGBA{}
 	}
-	return pageAccents[i]
+	return r.accents[i]
+}
+
+// PageLabel 页名的中文名（面板/日志用）
+func PageLabel(name string) string {
+	switch name {
+	case "detail":
+		return "详情"
+	case "system":
+		return "系统"
+	default:
+		return "环境"
+	}
+}
+
+// isValidPage 配置里出现的页名是否合法
+func isValidPage(name string) bool {
+	for _, n := range PageNames {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 func NewRenderer(mon *monitor.SystemMonitor, fan *hardware.FanController, scr *screen.Control) (*Renderer, error) {
@@ -199,11 +243,8 @@ func NewRenderer(mon *monitor.SystemMonitor, fan *hardware.FanController, scr *s
 
 	// 页面顺序（Material You 三页版，2026-10-28 洋哥拍板）：环境 → 详情 → 系统。
 	// 旧五页（概览/CPU内存/硬盘/网络/系统）已被 pages_m3.go 的三页取代。
-	r.pages = []Page{
-		NewEnvPage(mon),
-		NewDetailPage(mon),
-		NewSysPage(mon, scr),
-	}
+	r.mon, r.scr = mon, scr
+	r.applyPages(PageNames) // 默认三页全开、按规范顺序
 
 	r.rebuildBackground()
 	logx.Println("SDL2 渲染器初始化成功")
@@ -233,6 +274,128 @@ func (r *Renderer) PageAt(i int) Page {
 		return nil
 	}
 	return r.pages[i]
+}
+
+// applyPages 按"启用的页名（已排好序）"重建页面列表与页签色。
+//
+// 只允许在渲染协程调用（NewRenderer 初始化、Render 帧边界各一处）：
+// pages/accents/cur 都没有自己的锁，靠"只在渲染协程写"保证一致。
+// cur 收敛到新列表范围内；动画中的请求会被推迟到下一帧自然消费。
+func (r *Renderer) applyPages(names []string) {
+	if len(names) == 0 {
+		return // 至少留一页，空列表直接忽略（normalize 已保证不会发生）
+	}
+	// 内容没变就不动：启动时 NewRenderer 已建好默认三页，随后 ApplyPages
+	// 又会带同一份配置进来，不拦的话每次启动都白重建一轮、日志刷两遍
+	if cur := r.pagesSnap.Load(); cur != nil && strings.Join(*cur, ",") == strings.Join(names, ",") {
+		return
+	}
+	pages := make([]Page, 0, len(names))
+	accents := make([]RGBA, 0, len(names))
+	for _, n := range names {
+		switch n {
+		case "env":
+			pages = append(pages, NewEnvPage(r.mon))
+			accents = append(accents, pageAccents[0])
+		case "detail":
+			pages = append(pages, NewDetailPage(r.mon))
+			accents = append(accents, pageAccents[1])
+		case "system":
+			pages = append(pages, NewSysPage(r.mon, r.scr))
+			accents = append(accents, pageAccents[2])
+		}
+	}
+	if len(pages) == 0 {
+		return
+	}
+	r.pages, r.accents = pages, accents
+	if r.cur >= len(r.pages) {
+		r.cur = 0
+	}
+	// 预览协程（Web 面板）要读"当前启用了哪些页"，走原子快照而不是直接
+	// 读 r.pages —— 那会与这里的重建构成数据竞争（-race 实锤的那种）
+	r.pagesSnap.Store(&names)
+	r.accentsSnap.Store(&accents)
+	r.needFull = true
+	logx.Printf("【页面】启用 %v", names)
+}
+
+// ApplyPages 启动时同步应用页面配置（渲染循环尚未启动，直接改即可）
+func (r *Renderer) ApplyPages(names []string) { r.applyPages(names) }
+
+// PreviewPNG 面板的"实时预览"：按页名离屏重绘一帧，返回 PNG 字节。
+//
+// 与 cmd/preview 的本质区别：**同源**。这里的 monitor / 屏幕状态机 / 显示
+// 设置 / 主题全部来自正在运行的渲染器，面板上看到的和屏上是同一份数据；
+// 而 cmd/preview 是独立进程自己采样，两张图对不上号。
+//
+// 它是"离屏重绘"不是"截屏"：天气图标的动画相位、入场编排、夜间背光
+// 都不会体现在预览里 —— UI 文案必须叫预览，不能叫截图。
+//
+// 并发说明：在 Web 协程执行，不碰 r.pages / Canvas / 主 DrawCtx；
+// 字形缓存（gcache）自带锁，页面对象只持有 monitor 等只读引用。
+func (r *Renderer) PreviewPNG(name string) ([]byte, error) {
+	names := r.pagesSnap.Load()
+	if names == nil {
+		return nil, fmt.Errorf("页面尚未初始化")
+	}
+	idx := -1
+	for i, n := range *names {
+		if n == name {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return nil, fmt.Errorf("页面 %q 未启用", name)
+	}
+
+	c := NewCanvas(config.ScreenWidth, config.ScreenHeight)
+	d := NewDrawCtx(r.Fonts)
+	d.Theme = r.theme
+	d.Clock24h = r.Ctx.Clock24h
+	d.WeatherOn = r.Ctx.WeatherOn
+	d.Mon = r.Ctx.Mon
+	d.Fan = r.Ctx.Fan
+	d.Screen = r.Ctx.Screen
+	d.Net = r.Ctx.Net
+	d.WebToken = r.Ctx.WebToken
+	d.Now = time.Now() // 不抄 r.Ctx.Now：它是渲染协程每帧在写的，读了会撕裂
+
+	th := d.Theme
+	c.FillRectGrad(0, 0, c.W, c.H, th.BgTop, th.BgBot)
+
+	var p Page
+	switch name {
+	case "detail":
+		p = NewDetailPage(r.Ctx.Mon)
+	case "system":
+		p = NewSysPage(r.Ctx.Mon, r.Ctx.Screen)
+	default:
+		p = NewEnvPage(r.Ctx.Mon)
+	}
+	p.Draw(c, d)
+
+	if !pageFullTop(p) {
+		if n, ok := p.(Named); ok {
+			DrawTopBarM3(c, r.Fonts, th, n.PageName(), hintOf(n.PageName()))
+		}
+	}
+	DrawDots(c, *r.accentsSnap.Load(), idx, tabYOf(p))
+
+	img := &image.RGBA{Pix: c.Pix, Stride: c.W * 4, Rect: image.Rect(0, 0, c.W, c.H)}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// RequestPages 面板请求改页面显隐/顺序（任意协程可调）。
+// 真正的重建发生在下一个渲染帧开头 —— 与改主题不同，这会换掉整个
+// pages 切片，必须避开正在绘制的帧。
+func (r *Renderer) RequestPages(names []string) {
+	r.pendingPages.Store(&names)
 }
 
 // SwitchPage dir>0 下一页（左滑），dir<0 上一页（右滑）
@@ -448,6 +611,11 @@ type Damaged interface {
 }
 
 func (r *Renderer) Render(d *DrawCtx) {
+	// 面板改的页面显隐/顺序在这里落地：帧边界上没有绘制在进行
+	if p := r.pendingPages.Swap(nil); p != nil {
+		r.applyPages(*p)
+	}
+
 	c := r.Canvas
 	tDraw := time.Now()
 
@@ -586,7 +754,7 @@ func (r *Renderer) Render(d *DrawCtx) {
 		if ty0 != ty1 {
 			ty = int(float64(ty0) + float64(ty1-ty0)*e + 0.5)
 		}
-		DrawDotsT(c, pageAccents, r.animFrom, r.animTo, e, ty)
+		DrawDotsT(c, r.accents, r.animFrom, r.animTo, e, ty)
 	} else if r.EnterAnimating() {
 		// 入场编排期：普通页顶栏内容恒定，照常画上（已在起跑帧上传过，
 		// 这里保持画布与屏幕语义一致即可）；环境页是全出血 ——
@@ -595,7 +763,7 @@ func (r *Renderer) Render(d *DrawCtx) {
 			DrawTopBarM3(c, r.Fonts, r.theme, pageNameOf(r.pages[r.cur]),
 				hintOf(pageNameOf(r.pages[r.cur])))
 		}
-		acc := pageAccents
+		acc := r.accents
 		if len(acc) > len(r.pages) {
 			acc = acc[:len(r.pages)]
 		}
@@ -616,7 +784,7 @@ func (r *Renderer) Render(d *DrawCtx) {
 			r.lastClockMin = minute
 		}
 		if !local {
-			acc := pageAccents
+			acc := r.accents
 			if len(acc) > len(r.pages) {
 				acc = acc[:len(r.pages)]
 			}
@@ -638,7 +806,7 @@ func (r *Renderer) Render(d *DrawCtx) {
 			r.lastClockMin = minute
 		}
 		if !local {
-			acc := pageAccents
+			acc := r.accents
 			if len(acc) > len(r.pages) {
 				acc = acc[:len(r.pages)]
 			}

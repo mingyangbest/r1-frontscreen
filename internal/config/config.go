@@ -94,6 +94,12 @@ type DisplayConfig struct {
 	Weather bool `yaml:"weather" json:"weather"`
 	// SampleSec 屏幕数字的刷新间隔（秒），只允许 2 / 3 / 5
 	SampleSec int `yaml:"sample_seconds" json:"sample_seconds"`
+	// PageOrder 全部页面的显示顺序，env/detail/system 的某个排列。
+	// 隐藏的页也留在这里 —— 否则重新打开时不知道该插回哪个位置。
+	PageOrder []string `yaml:"page_order" json:"page_order"`
+	// PagesOn 实际启用的页面（PageOrder 的子集，至少一页）。
+	// 屏幕翻页只在启用页之间循环，页签也只画启用的。
+	PagesOn []string `yaml:"pages" json:"pages"`
 }
 
 // HardwareConfig 硬件节点路径
@@ -112,11 +118,19 @@ type HardwareConfig struct {
 // 存在就只纠正越界值（主题名写错 → ink，采样间隔填 1 或 7 → 2）。
 func (c *Config) normalize() {
 	if c.Display.Theme == "" {
-		c.Display = DisplayConfig{Theme: "ink", Clock24: true, Weather: true, SampleSec: 2}
-		return
+		c.Display = DisplayConfig{
+			Theme: "ink", Clock24: true, Weather: true, SampleSec: 2,
+			PageOrder: []string{"env", "detail", "system"},
+			PagesOn:   []string{"env", "detail", "system"},
+		}
 	}
+	// 无条件再过一遍 Normalize：Theme 为空的分支刚填完默认值，
+	// 走这里等于自查一遍；非空分支负责把越界值拉回来（含页面两表）
 	c.Display.Normalize()
 }
+
+// canonicalPages 全部合法页名，顺序即默认顺序
+var canonicalPages = []string{"env", "detail", "system"}
 
 // Normalize 把越界的值拉回可用值（不改"整段缺失"的判断，那是 Config 的事）。
 // 面板写配置时也走这里，保证落盘的永远是合法值。
@@ -131,6 +145,73 @@ func (d *DisplayConfig) Normalize() {
 	default:
 		d.SampleSec = 2
 	}
+	d.normalizePages()
+}
+
+// normalizePages 把页面顺序收敛成"合法页名的一次排列"、启用表收敛成其子集。
+//
+// 规则故意偏保守：
+//   - 顺序里缺了某页就补到末尾（而不是报错）—— 老配置文件没有这两个
+//     字段，Unmarshal 后是空切片，必须能自己长出默认值
+//   - 启用表里出现顺序之外的页名直接丢弃（防手改配置写出错别字）
+//   - 启用表为空 = 全部启用。面板允许配到"只剩一页"，但不会允许 0 页
+//     —— 屏幕总得显示点什么
+func (d *DisplayConfig) normalizePages() {
+	seen := map[string]bool{}
+	order := make([]string, 0, len(canonicalPages))
+	for _, n := range d.PageOrder {
+		if !isValidPageName(n) || seen[n] {
+			continue
+		}
+		seen[n] = true
+		order = append(order, n)
+	}
+	for _, n := range canonicalPages {
+		if !seen[n] {
+			order = append(order, n)
+		}
+	}
+	d.PageOrder = order
+
+	seen = map[string]bool{}
+	on := make([]string, 0, len(order))
+	for _, n := range d.PagesOn {
+		if !isValidPageName(n) || seen[n] {
+			continue
+		}
+		seen[n] = true
+		on = append(on, n)
+	}
+	if len(on) == 0 {
+		on = append(on, order...)
+	}
+	d.PagesOn = on
+}
+
+// EnabledPages 按 PageOrder 的顺序返回启用的页名（渲染器用这个建页列表）
+func (d *DisplayConfig) EnabledPages() []string {
+	on := map[string]bool{}
+	for _, n := range d.PagesOn {
+		on[n] = true
+	}
+	out := make([]string, 0, len(d.PageOrder))
+	for _, n := range d.PageOrder {
+		if on[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// isValidPageName 单个页名是否合法（与 ui.PageNames 保持同一口径，
+// 这里不用 import ui —— config 是最底层，反向依赖会成环）
+func isValidPageName(name string) bool {
+	for _, n := range canonicalPages {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Load 从默认路径读取配置。文件不存在返回默认值，格式损坏返回 error
@@ -385,7 +466,9 @@ func DefaultConfig() *Config {
 			HDD: FanCurve{Mode: "auto", PWMIndex: 2, TempSensor: "it8628:temp2", MinTemp: 40, MaxTemp: 60, MinSpeed: 50, MaxSpeed: 255},
 		},
 		Web:     WebConfig{Enabled: true, Port: 8080},
-		Display: DisplayConfig{Theme: "ink", Clock24: true, Weather: true, SampleSec: 2},
+		Display: DisplayConfig{Theme: "ink", Clock24: true, Weather: true, SampleSec: 2,
+			PageOrder: []string{"env", "detail", "system"},
+			PagesOn:   []string{"env", "detail", "system"}},
 		Hardware: HardwareConfig{
 			BrightnessPath: "/sys/devices/pci0000:00/0000:00:02.0/drm/card0/card0-DSI-1/intel_backlight/brightness",
 			HwmonPath:      "/sys/class/hwmon/hwmon3",

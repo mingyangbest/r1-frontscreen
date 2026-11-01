@@ -167,10 +167,12 @@ func main() {
 
 	// 显示设置：主题必须在首帧之前定下来，否则用户会先看到 ink 闪一下
 	// 再跳到他选的主题（rebuildBackground + needFull 也白做一次）。
-	if dc := store.Get().Display; dc.Theme != "" && dc.Theme != renderer.Theme().Name {
+	dc := store.Get().Display
+	if dc.Theme != "" && dc.Theme != renderer.Theme().Name {
 		renderer.SetTheme(dc.Theme)
 	}
-	renderer.ApplyDisplay(store.Get().Display)
+	renderer.ApplyDisplay(dc)
+	renderer.ApplyPages(dc.EnabledPages())
 
 	// 启动即按昼夜定亮度：夜里重启服务不再被白天亮度闪一下眼
 	brightness.Set(screenCtl.Target())
@@ -201,14 +203,21 @@ func main() {
 	// ---------------- Web 面板 ----------------
 	if cfg.Web.Enabled && cfg.Web.Token != "" {
 		webServer := web.NewServer(mon, fanCtrl, rgbCtrl, brightness, store, screenCtl)
+		// 实时预览：面板要看屏上现在显示什么 —— 同一份快照离屏重绘
+		webServer.Preview = func(page string) ([]byte, error) {
+			return renderer.PreviewPNG(page)
+		}
 		// 面板改了显示设置 → 立刻反映到屏幕上（不必重启服务）
 		webServer.OnDisplay = func(dc config.DisplayConfig) {
+			pages := dc.EnabledPages()
 			if dc.Theme != renderer.Theme().Name {
 				renderer.SetTheme(dc.Theme)
 			}
 			renderer.ApplyDisplay(dc)
-			logx.Printf("【显示】主题 %s · %s · 天气 %v · 采样 %d 秒",
-				dc.Theme, clockModeText(dc.Clock24), dc.Weather, dc.SampleSec)
+			renderer.RequestPages(pages)
+			logx.Printf("【显示】主题 %s · %s · 天气 %v · 采样 %d 秒 · 页面 %v",
+				dc.Theme, clockModeText(dc.Clock24), dc.Weather, dc.SampleSec,
+				dc.EnabledPages())
 		}
 		go func() {
 			addr := fmt.Sprintf(":%d", cfg.Web.Port)

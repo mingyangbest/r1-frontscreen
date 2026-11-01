@@ -29,6 +29,11 @@ type Server struct {
 	// OnDisplay 显示设置变更后的回调（主程序注入：把改动立刻推到屏幕上）。
 	// 为 nil 时只落盘，重启后生效 —— 面板不该因为屏幕没接上就拒绝保存。
 	OnDisplay func(config.DisplayConfig)
+
+	// Preview 实时预览：按页名离屏重绘一帧 PNG（主程序注入渲染器闭包）。
+	// 为 nil 时 /api/preview 返回 501 —— 预览依赖屏幕在跑，纯 headless
+	// 场景（Docker 容器运行）给不了。
+	Preview func(page string) ([]byte, error)
 }
 
 // NewServer 组装 Web 面板。
@@ -93,6 +98,7 @@ func (s *Server) setupRoutes() {
 	router.GET("/api/status", s.handleStatus)
 	router.GET("/api/config", s.handleConfig)
 	router.GET("/api/display", s.handleDisplayGet)
+	router.GET("/api/preview", s.handlePreview)
 	router.POST("/api/display", s.handleDisplaySet)
 	router.GET("/api/hwmon/scan", s.handleHwmonScan)
 	router.POST("/api/brightness", s.handleBrightness)
@@ -325,6 +331,24 @@ func (s *Server) handleDisplaySet(c *gin.Context) {
 		s.OnDisplay(req)
 	}
 	c.JSON(200, gin.H{"success": true, "display": req})
+}
+
+// handlePreview 返回指定页的实时预览 PNG。
+//
+// 页名不合法或未启用都返回 400（面板只渲染启用的页，出现 400 说明
+// 两边状态不同步 —— 比如用户在另一台设备上刚把页关了）。
+func (s *Server) handlePreview(c *gin.Context) {
+	if s.Preview == nil {
+		c.JSON(501, gin.H{"error": "预览不可用（屏幕未在运行）"})
+		return
+	}
+	page := c.Query("page")
+	png, err := s.Preview(page)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	c.Data(200, "image/png", png)
 }
 
 func (s *Server) handleHwmonScan(c *gin.Context) {

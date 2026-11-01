@@ -44,6 +44,31 @@
         <span v-html="banner.text"></span>
       </div>
 
+      <!-- ── 实时预览 ── -->
+      <section class="card">
+        <div class="hd">
+          <span class="sq" style="background:#0d9488"></span>
+          <h2>实时预览</h2>
+          <span class="en">LIVE PREVIEW</span>
+          <label class="auto"><input type="checkbox" v-model="previewAuto" /> 15 秒自动刷新</label>
+        </div>
+        <div class="bd pv">
+          <div class="pv-side">
+            <button v-for="n in display.pages" :key="n" class="btn ghost pv-btn"
+                    :class="{ on: previewPage === n }" @click="loadPreview(n)">{{ pageLabels[n] }}</button>
+            <button class="btn ghost sm" @click="refreshPreview" :class="{ busy: previewBusy }">刷新</button>
+          </div>
+          <div class="pv-shot">
+            <img v-if="previewSrc" :src="previewSrc" alt="屏幕预览" @load="previewBusy = false" />
+            <div v-else class="empty">选择左侧页面开始预览</div>
+          </div>
+          <div class="pv-note">
+            <b>这是离屏重绘，不是截屏</b>：与屏幕共用同一份采样与设置，改动立即反映；
+            但天气图标动画相位、入场编排、夜间背光不会体现在预览里。
+          </div>
+        </div>
+      </section>
+
       <!-- ── 指标 ── -->
       <div class="kpis">
         <div class="kpi">
@@ -180,6 +205,7 @@
                 <span :class="{ on: !display.weather }" @click="setDisplay('weather', false)">隐藏</span>
               </div>
             </div>
+
             <div class="field">
               <label>刷新节奏</label>
               <div class="seg">
@@ -188,6 +214,23 @@
               </div>
             </div>
           </div>
+
+          <div class="row top">
+            <div class="field grow">
+              <label>页面与顺序</label>
+              <div class="prow" v-for="(n, i) in display.page_order" :key="n">
+                <span class="pname" :class="{ off: !display.pages.includes(n) }">{{ pageLabels[n] }}</span>
+                <div class="seg">
+                  <span :class="{ on: display.pages.includes(n) }" @click="togglePage(n)">显示</span>
+                  <span :class="{ on: !display.pages.includes(n) }" @click="togglePage(n)">隐藏</span>
+                </div>
+                <button class="btn ghost sm" @click="movePage(i, -1)" :disabled="i === 0">↑</button>
+                <button class="btn ghost sm" @click="movePage(i, 1)" :disabled="i === display.page_order.length - 1">↓</button>
+              </div>
+              <div class="hint">翻页只在「显示」的页之间循环，页签也只画启用的；隐藏的页保留在列表里，随时可以再打开。</div>
+            </div>
+          </div>
+
           <div class="hint mt">主题与时钟立刻生效；刷新节奏改动后，新周期从下一次采样开始算。</div>
         </div>
       </section>
@@ -361,7 +404,57 @@ const rgbColor = ref('green')
 const themes = [
   { v: 'ink', t: '墨' }, { v: 'mono', t: '素' }, { v: 'sand', t: '沙' }, { v: 'jade', t: '青' },
 ]
-const display = reactive({ theme: 'ink', clock_24h: true, weather: true, sample_seconds: 2 })
+const display = reactive({
+  theme: 'ink', clock_24h: true, weather: true, sample_seconds: 2,
+  page_order: ['env', 'detail', 'system'], pages: ['env', 'detail', 'system'],
+})
+const pageLabels = { env: '环境', detail: '详情', system: '系统' }
+
+/* ── 实时预览 ── */
+const previewPage = ref('')
+const previewSrc = ref('')
+const previewAuto = ref(true)
+const previewBusy = ref(false)
+let previewTimer = null
+const loadPreview = async (name) => {
+  if (!name) return
+  previewBusy.value = true
+  previewPage.value = name
+  try {
+    // 必须走 fetch 拿 blob：<img src> 不经过全局 fetch 拦截器，
+    // 请求头上不了 X-Token，会被 401 拒掉（表现为一张纯黑的破图）
+    const r = await fetch(`/api/preview?page=${name}&t=${Date.now()}`)
+    if (!r.ok) throw new Error(String(r.status))
+    const blob = await r.blob()
+    if (previewSrc.value.startsWith('blob:')) URL.revokeObjectURL(previewSrc.value)
+    previewSrc.value = URL.createObjectURL(blob)
+  } catch {
+    tip('预览加载失败')
+  } finally {
+    previewBusy.value = false
+  }
+}
+const refreshPreview = () => loadPreview(previewPage.value || display.pages[0])
+const watchAutoPreview = () => {
+  clearInterval(previewTimer)
+  if (previewAuto.value) previewTimer = setInterval(refreshPreview, 15000)
+}
+const togglePage = (name) => {
+  const on = display.pages.includes(name)
+  if (on && display.pages.length <= 1) return tip('至少保留一页 —— 屏幕总得显示点什么')
+  display.pages = on ? display.pages.filter((n) => n !== name) : [...display.pages, name]
+  saveDisplay().then(() => {
+    if (!display.pages.includes(previewPage.value)) loadPreview(display.pages[0])
+  })
+}
+const movePage = (i, dir) => {
+  const order = [...display.page_order]
+  const j = i + dir
+  if (j < 0 || j >= order.length) return
+  ;[order[i], order[j]] = [order[j], order[i]]
+  display.page_order = order
+  saveDisplay()
+}
 
 /* ── 硬件 ── */
 const hw = reactive({ fans: [], temps: [] })
@@ -418,7 +511,10 @@ const loadConfig = () =>
     rgbColor.value = d.rgb.color || 'green'
   })
 
-const loadDisplay = () => api('/api/display').then((d) => Object.assign(display, d)).catch(() => {})
+const loadDisplay = () => api('/api/display').then((d) => {
+  Object.assign(display, d)
+  if (!previewPage.value || !display.pages.includes(previewPage.value)) loadPreview(display.pages[0])
+}).catch(() => {})
 
 const loadStatus = () =>
   api('/api/status').then((d) => {
@@ -509,10 +605,14 @@ const setRGBColor = (color) => {
 const setDisplay = (key, val) => {
   const prev = display[key]
   display[key] = val
-  api('/api/display', { ...display })
-    .then((d) => { if (d.display) Object.assign(display, d.display); tip('显示设置已应用') })
-    .catch(() => { display[key] = prev; tip('显示设置失败') })
+  return saveDisplay().catch(() => { display[key] = prev; tip('显示设置失败') })
 }
+const saveDisplay = () =>
+  api('/api/display', { ...display }).then((d) => {
+    if (d.display) Object.assign(display, d.display)
+    tip('显示设置已应用')
+    return d
+  }).catch(() => { tip('显示设置失败'); throw new Error('save failed') })
 
 const scanHardware = () => {
   scanning.value = true
@@ -527,8 +627,9 @@ let pollTimer = null
 onMounted(() => {
   refreshAll()
   pollTimer = setInterval(loadStatus, 2000)
+  watchAutoPreview()
 })
-onUnmounted(() => clearInterval(pollTimer))
+onUnmounted(() => { clearInterval(pollTimer); clearInterval(previewTimer) })
 </script>
 
 <style>
@@ -753,6 +854,34 @@ code {
 .seg span:not(.on):hover { background: var(--hover); }
 .seg.wide { display: flex; width: 100%; }
 .seg.wide span { flex: 1; text-align: center; }
+
+/* ── 预览 ── */
+.auto {
+  margin-left: auto; font-size: 12px; color: var(--ink2);
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+}
+.auto input { accent-color: var(--accent); }
+.pv { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+.pv-side { display: flex; flex-direction: column; gap: 8px; min-width: 108px; }
+.pv-btn.on {
+  border-color: var(--accent); color: var(--accent);
+  background: var(--accent-l); font-weight: 560;
+}
+.pv-shot { flex: 0 0 auto; }
+.pv-shot img {
+  height: 420px; width: 165px; /* 376:960 等比，写死避免 flex 收缩压成窄条 */
+  display: block; border-radius: 10px; border: 1px solid var(--line);
+  background: #000; box-shadow: 0 1px 3px rgba(16, 24, 40, .12);
+  object-fit: cover;
+}
+.pv-note { flex: 1 1 200px; font-size: 12px; color: var(--ink3); line-height: 1.9; min-width: 180px; }
+.pv-note b { display: block; color: var(--ink2); font-weight: 600; margin-bottom: 4px; }
+
+/* ── 页面与顺序 ── */
+.prow { display: flex; align-items: center; gap: 12px; padding: 5px 0; }
+.pname { width: 46px; font-size: 13px; font-weight: 560; }
+.pname.off { color: var(--ink3); font-weight: 400; }
+.btn:disabled { opacity: .35; pointer-events: none; }
 
 /* ── 风扇 ── */
 .fan + .fan { border-top: 1px solid var(--line2); margin-top: 16px; padding-top: 16px; }
