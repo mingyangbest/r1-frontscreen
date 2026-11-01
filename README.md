@@ -6,11 +6,11 @@
 
 ## 界面预览
 
-### v0.8.6 · Material You 三页版（当前）
+### v0.8.7 · Material You 三页版（当前）
 
 | 环境（主屏） | 详情 | 系统 |
 |:---:|:---:|:---:|
-| ![环境](docs/screenshots/env.png?v=086) | ![详情](docs/screenshots/detail.png?v=086) | ![系统](docs/screenshots/system.png?v=086) |
+| ![环境](docs/screenshots/env.png?v=087) | ![详情](docs/screenshots/detail.png?v=087) | ![系统](docs/screenshots/system.png?v=087) |
 
 *三页触摸翻页 · 100px 大时钟+天气融合 · 首屏放趋势（CPU 60 秒曲线）、每核明细在详情页 · 每卡一色的低饱和 tonal 配色 · 读数与进度条共用一套阈值色（<50 绿 / ≥50 沙金 / ≥80 珊瑚）· 截图中局域网与公网地址已替换为 RFC 5737 文档保留地址（`192.168.1.10` / `203.0.113.42`），面板令牌按设计本就只显示「已设置 / 未设置」，明文从不上屏*
 
@@ -142,6 +142,7 @@ docker compose up -d screen   # privileged + /dev/fb0 + host 网络
 
 完整版本历史见 [CHANGELOG.md](CHANGELOG.md)(每个版本打 git tag 并发布 [Release](https://github.com/mingyangbest/r1-frontscreen/releases))。最近更新:
 
+- **v0.8.7 · 2026-11-01**:Docker 卡状态改为**健康（绿）/ 异常（红）**——判据是「异常容器数」而不是「运行数」，停掉的项目不算异常（`Exited (0)`、SIGTERM 143 都算正常停止，只有非零退出码 / unhealthy / restarting 才报），与飞牛和 Docker Desktop 的口径一致；首页药丸改为文字居中、去掉左侧绿点；CPU 卡标题简化为「CPU」；内存卡去掉「物理 16 GB」标注（系统页设备卡已有）；系统页「网络」改为「网络 IP」
 - **v0.8.6 · 2026-11-01**:首页底部药丸只留「已运行 N 天 N 时」——容器计数已由系统页 Docker 卡承担，同一件事不必说两遍；三张预览图重拍（IP 仍为 RFC 5737 示例地址）
 - **v0.8.5 · 2026-11-01**:系统页容器卡改成 **Docker 健康卡**——一行结论（`健康` / `N 个已退出`）+ 三行计数：`项目 N 个 · 运行 N · 停止 N` / `镜像 N 个 · 用中 N · 闲置 N` / `容器 N 个 · 运行 N · 退出 N`，每个维度都按「总数 = 运行 + 停止」给全；数据来自 Docker API 的 containers + images 两个接口
 - **v0.8.4 · 2026-11-01**:系统页「上传·下载」卡与首页网络卡重复，删除（今日收/发并入首页网络卡底部），换成**容器卡**（`29 运行 / 30 总计` + 容器名列表，名取自 Docker API）；天气图标再放大 r 32 → 46（直径 92，已接近时钟右侧的可用上限）；三页卡片配色重排，**相邻卡片不再同色**（详情 slate/rose/mint/sand，系统 slate/mint/rose/sage）

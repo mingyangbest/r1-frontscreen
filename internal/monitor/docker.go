@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"r1-toolbox/internal/logx"
@@ -31,6 +34,11 @@ type DockerStats struct {
 	ContainersRunning int
 	ContainersExited  int // 非 running 的全部算退出（exited/created/paused）
 
+	// ContainersAbnormal 真正出了问题、需要人看一眼的容器数。
+	// 「停止」不等于「异常」：docker compose stop 是用户主动行为，ExitCode 0，
+	// 不该报红。判定见 containerAbnormal。
+	ContainersAbnormal int
+
 	ImagesTotal  int
 	ImagesUsed   int
 	ImagesUnused int
@@ -40,9 +48,41 @@ type DockerStats struct {
 	ProjectsStopped int
 }
 
-// Healthy 是否全部在运行（决定卡片右上角的状态点与副标题）
+// Healthy 全部容器都没有异常。注意判据是「异常数」而不是「运行数」——
+// 停掉的项目不影响健康度，这与飞牛/Docker Desktop 的口径一致。
 func (d *DockerStats) Healthy() bool {
-	return d != nil && d.ContainersRunning == d.ContainersTotal
+	return d != nil && d.ContainersAbnormal == 0
+}
+
+// exitedRe 从容器 Status 串里取退出码："Exited (137) 2 days ago" → 137
+var exitedRe = regexp.MustCompile(`Exited \((\d+)\)`)
+
+// containerAbnormal 判断一个容器是否「需要人看一眼」。
+//
+// 2026-11-01 洋哥定的口径：有项目/容器停着，只要不是出错，就算健康。
+// 所以这里只看三件事：
+//
+//	① State 是 restarting / dead —— 在重启循环里或已经死掉；
+//	② Status 带 (unhealthy) —— healthcheck 失败；
+//	③ 退出码既不是 0（正常结束）也不是 143（SIGTERM，docker stop 的标准信号）。
+//	   137 是 SIGKILL（常见于 OOM 被杀）、1 是应用自己报错退出，这些都要报。
+//
+// paused / created 不算异常：前者是用户主动暂停，后者是建好还没启动。
+func containerAbnormal(state, status string) bool {
+	switch state {
+	case "restarting", "dead":
+		return true
+	}
+	if strings.Contains(status, "(unhealthy)") {
+		return true
+	}
+	if m := exitedRe.FindStringSubmatch(status); m != nil {
+		code, err := strconv.Atoi(m[1])
+		if err == nil {
+			return code != 0 && code != 143
+		}
+	}
+	return false
 }
 
 var dockerHTTPClient = &http.Client{
@@ -94,6 +134,7 @@ func fetchDockerStats() *DockerStats {
 	type ctrInfo struct {
 		Names  []string          `json:"Names"`
 		State  string            `json:"State"`
+		Status string            `json:"Status"` // "Up 3 days (healthy)" / "Exited (137) 2 days ago"
 		Labels map[string]string `json:"Labels"`
 	}
 	var ctrs []ctrInfo
@@ -121,6 +162,9 @@ func fetchDockerStats() *DockerStats {
 			st.ContainersRunning++
 		} else {
 			st.ContainersExited++
+		}
+		if containerAbnormal(c.State, c.Status) {
+			st.ContainersAbnormal++
 		}
 		if p := c.Labels["com.docker.compose.project"]; p != "" {
 			if _, seen := projects[p]; !seen {

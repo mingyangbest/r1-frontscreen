@@ -270,7 +270,7 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 	// 一致，否则就是在屏上报一个假的时间跨度。
 	if c.ClipVisible(DPadX, envHistY, DCardW, envHistH) {
 		DCardBox(c, d, DPadX, envHistY, DCardW, envHistH, colSage)
-		DCardTitle(c, fs, DPadX, envHistY+13, "CPU 历史 · 60 秒", colWhite)
+		DCardTitle(c, fs, DPadX, envHistY+13, "CPU", colWhite)
 		peak := 0.0
 		for _, v := range m.CPUHistory {
 			if v > peak {
@@ -342,17 +342,15 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 	}
 
 	// ---------------- 底部药丸（运行时长）----------------
-	// 洋哥 2026-11-01：容器数量从这一行删掉 —— Docker 的三组计数已经
-	// 搬到系统页的 Docker 卡，首页只需回答"这台机器开着多久了"。
-	// 圆点固定薄荷绿：它现在表示"系统在跑"，不再承担容器的状态语义。
+	// 洋哥 2026-11-01：容器数量从这一行删掉（已由系统页 Docker 卡承担）；
+	// 同一天再改：文字**居中**、左边那颗绿点删掉 —— 只有一段字的时候，
+	// 圆点不再标示任何状态，留着只会让居中的文字被它挤偏。
 	if c.ClipVisible(DPadX, envPillY, DCardW, envPillH) {
 		DPill(c, DPadX, envPillY, DCardW, envPillH)
-		// 圆点实测圆心 x=42（直径 8.5），文字起点 55、墨迹顶 853.5
-		DPillDot(c, DPadX+18, envPillY+envPillH/2, colMint)
 
-		DrawPartsTop(c, fs, DPadX+31, envPillY+15, FzMeta, []TPart{
-			{S: "已运行 " + formatUptime(m.UptimeSec), Col: colSub},
-		})
+		parts := []TPart{{S: "已运行 " + formatUptime(m.UptimeSec), Col: colSub}}
+		w, _ := measureParts(fs, FzMeta, parts)
+		DrawPartsTop(c, fs, DPadX+(DCardW-w)/2, envPillY+15, FzMeta, parts)
 	}
 }
 
@@ -453,13 +451,10 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 	// ---------------- 内存 ----------------
 	if c.ClipVisible(DPadX, dtMemY, DCardW, dtMemH) {
 		DCardBox(c, d, DPadX, dtMemY, DCardW, dtMemH, colRose)
-		tw := DCardTitle(c, fs, DPadX, dtMemY+13, "内存", colRose)
-		// 标题后紧跟物理容量：16 GB 的机器内核只报 15.4 GiB（核显/固件预留），
-		// 两个数字都摆出来，才不会让人以为内存"缩水"了
-		if m.MemPhysGB > 0 {
-			DrawPartsTop(c, fs, DPadX+DPad+tw+10, dtMemY+17, FzMeta,
-				splitParts(fmt.Sprintf("物理 %.0f GB", m.MemPhysGB), colDim))
-		}
+		// 标题后的「物理 16 GB」已删（洋哥 2026-11-01）—— 系统页设备卡已经
+		// 写了 DDR5 16 GB，这里再标一次是重复；大数字旁的 15.4 GB 是内核
+		// 可见量，本来就是给"当前用了多少"做分母的。
+		DCardTitle(c, fs, DPadX, dtMemY+13, "内存", colRose)
 		memPct := clamp(d.Ease("dt.mp", m.MemPercent), 0, 100)
 		DMetaR(c, fs, DPadX+DCardW, dtMemY+16, fmt.Sprintf("%.0f%%", memPct), valColor(memPct))
 
@@ -745,7 +740,7 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 	// ---------------- 网络（链路速率 / 公网可达性，信号条表达）----------------
 	if c.ClipVisible(DPadX, syNetY, DCardW, syNetH) {
 		DCardBox(c, d, DPadX, syNetY, DCardW, syNetH, colMint)
-		DCardTitle(c, fs, DPadX, syNetY+13, "网络", colMint)
+		DCardTitle(c, fs, DPadX, syNetY+13, "网络 IP", colMint)
 
 		// 局域网：**显示本机在该网口上的 IPv4**（洋哥 2026-10-30：局域网和公网
 		// IP 都要如实）。接口名 enp2s0-ovs 回答不了"这台机器在哪、该怎么连它"，
@@ -802,13 +797,14 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 			DrawPartsTop(c, fs, DPadX+DPad, syCtrY+48, FzCard,
 				[]TPart{{S: "读不到 /var/run/docker.sock", Col: colDim}})
 		} else {
-			// 右上给结论（健康 / N 个已退出），副标题给一句人话 —— 两者
-			// 粒度不同但说的是同一件事，不重复也不打架。
+			// 右上角只给两个词（洋哥 2026-11-01）：健康（薄荷绿）/ 异常（珊瑚红）。
+			// 判据是「异常容器数」而不是「运行数」—— 停掉的项目不算异常，
+			// 与飞牛/Docker Desktop 的口径一致；具体判定见 monitor.containerAbnormal。
 			head, headCol, sub := "健康", colMint, "所有服务运行状态健康"
 			if !dk.Healthy() {
-				head = fmt.Sprintf("%d 个已退出", dk.ContainersExited)
-				headCol = colSand
-				sub = fmt.Sprintf("%d 个容器已退出，其余服务运行正常", dk.ContainersExited)
+				head = "异常"
+				headCol = colCoral
+				sub = fmt.Sprintf("%d 个容器异常，需要检查", dk.ContainersAbnormal)
 			}
 			DMetaR(c, fs, DPadX+DCardW, syCtrY+16, head, headCol)
 			DrawPartsTop(c, fs, DPadX+DPad, syCtrY+42, FzMeta,
