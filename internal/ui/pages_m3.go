@@ -82,7 +82,7 @@ func numFit(fs *FontSet, num, unit string, maxW, start int) int {
 	for _, sz := range []int{start, start * 15 / 16, start * 7 / 8, start * 3 / 4} {
 		parts := []TPart{
 			{S: num, Col: colData, Latin: true, Bold: true},
-			{S: unit, Col: colDim, Latin: true, Size: FzUnit, Gap: 2},
+			{S: unit, Col: colDim, Latin: true, Size: FzUnit, Gap: 3},
 		}
 		if w, _ := measureParts(fs, sz, parts); w <= maxW {
 			return sz
@@ -95,7 +95,7 @@ func numFit(fs *FontSet, num, unit string, maxW, start int) int {
 func drawRateRow(c *Canvas, fs *FontSet, xRight, yInk int, v float64, col RGBA, up bool) {
 	parts := []TPart{
 		{S: fmtMBps(v), Col: col, Latin: true},
-		{S: "MB/s", Col: colDim, Latin: true, Size: FzMeta, Gap: 5},
+		{S: "MB/s", Col: colDim, Latin: true, Size: FzMeta, Gap: 3},
 	}
 	w, _ := measureParts(fs, FzRate, parts)
 	DrawPartsTopR(c, fs, xRight, yInk, FzRate, parts)
@@ -251,13 +251,13 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 			// 标签：卡片点缀色，15px，墨迹顶 +13。
 			// 18px 时「内存」墨迹 17px 宽 33px，参考图是 14.5 / 28 —— 小卡只有
 			// 100 宽，18px 的标题会跟数字抢地方，参考图这里本来就降了一档。
-			drawTrackedTop(c, fs, mc.label, cx+DPad, envCardsY+13, FzMini, mc.hue, 0)
+			drawTrackedTop(c, fs, mc.label, cx+DPad, envCardsY+13, FzCard, mc.hue, 0)
 			// 数字：墨迹顶 +48，粗体；颜色按读数走阈值（<50 偏灰白 / >=50 沙金
 			// / >=80 珊瑚），放不下自动降一档
 			sz := numFit(fs, mc.txt, mc.unit, envMiniW-2*DPad, FzNum)
 			DrawPartsTop(c, fs, cx+DPad, envCardsY+48, sz, []TPart{
 				{S: mc.txt, Col: valColor(mc.v), Latin: true, Bold: true},
-				{S: mc.unit, Col: colDim, Latin: true, Size: FzUnit, Gap: 2},
+				{S: mc.unit, Col: colDim, Latin: true, Size: FzUnit, Gap: 3},
 			})
 			// 进度条：+85，高 4，内缩 12（参考图 321..324，3.5px 四舍五入到 4）
 			c.Bar(cx+DPad, envCardsY+85, envMiniW-2*DPad, 4, 2,
@@ -270,7 +270,7 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 	// 一致，否则就是在屏上报一个假的时间跨度。
 	if c.ClipVisible(DPadX, envHistY, DCardW, envHistH) {
 		DCardBox(c, d, DPadX, envHistY, DCardW, envHistH, colSage)
-		DCardTitle(c, fs, DPadX, envHistY+13, "CPU", colWhite)
+		DCardTitle(c, fs, DPadX, envHistY+13, "CPU", colSage)
 		peak := 0.0
 		for _, v := range m.CPUHistory {
 			if v > peak {
@@ -290,14 +290,14 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 		cpuNow := d.Ease("env.cpu", m.CPUPercent)
 		DrawPartsTop(c, fs, DPadX+DPad, envHistY+179, FzCurrent, []TPart{
 			{S: "当前", Col: colDim},
-			{S: fmt.Sprintf("%.0f%%", cpuNow), Col: valColor(cpuNow), Latin: true, Gap: 6},
+			{S: fmt.Sprintf("%.0f%%", cpuNow), Col: valColor(cpuNow), Latin: true, Gap: 7},
 		})
 	}
 
 	// ---------------- 网络（双速率 + 双曲线）----------------
 	if c.ClipVisible(DPadX, envNetY, DCardW, envNetH) {
 		DCardBox(c, d, DPadX, envNetY, DCardW, envNetH, colMint)
-		DCardTitle(c, fs, DPadX, envNetY+13, "网络", colWhite)
+		DCardTitle(c, fs, DPadX, envNetY+13, "网络", colMint)
 
 		up := d.Ease("env.up", m.NetSendMBps)
 		dn := d.Ease("env.dn", m.NetRecvMBps)
@@ -417,7 +417,7 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 		// 失去指代作用。改 slate 后四张全不同：slate/rose/mint/sand，
 		// 而且 CPU=slate 与环境页那张 CPU 小卡同色，语义更顺。
 		DCardBox(c, d, DPadX, dtCpuY, DCardW, dtCpuH, colSlate)
-		DCardTitle(c, fs, DPadX, dtCpuY+13, "CPU 负载", colSlate)
+		DCardTitle(c, fs, DPadX, dtCpuY+13, "CPU", colSlate)
 		// 右上角原来是 load average（1m · 5m）—— 洋哥 2026-11-01 让删掉。
 		// 那个数对服务器有意义，但对墙上这块屏不直观：0.31 是好是坏，
 		// 得先知道它是"平均排队进程数"、还得知道这台机器 4 核。
@@ -473,11 +473,11 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 
 		DrawPartsTop(c, fs, DPadX+DPad, dtMemY+128, FzMeta, []TPart{
 			{S: "缓存", Col: colDim},
-			{S: fmt.Sprintf("%.1f GB", m.MemCacheGB), Col: colDim, Latin: true, Gap: 5},
-			{S: "·", Col: colTab, Gap: 9},
-			{S: "Swap", Col: colDim, Latin: true, Gap: 9},
+			{S: fmt.Sprintf("%.1f GB", m.MemCacheGB), Col: colDim, Latin: true, Gap: 3},
+			{S: "·", Col: colTab, Gap: 8},
+			{S: "Swap", Col: colDim, Latin: true, Gap: 8},
 			{S: fmt.Sprintf("%.1f / %.0f GB", m.SwapUsedGB, m.SwapTotalGB),
-				Col: colDim, Latin: true, Gap: 5},
+				Col: colDim, Latin: true, Gap: 3},
 		})
 	}
 
@@ -517,7 +517,7 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 	// ---------------- 温度与风扇 ----------------
 	if c.ClipVisible(DPadX, dtTempY, DCardW, dtTempH) {
 		DCardBox(c, d, DPadX, dtTempY, DCardW, dtTempH, colSand)
-		DCardTitle(c, fs, DPadX, dtTempY+13, "温度与风扇", colSand)
+		DCardTitle(c, fs, DPadX, dtTempY+13, "温度", colSand)
 
 		cpuT := clamp(d.Ease("dt.ct", m.CPUTemp), 0, 120)
 		diskT := clamp(d.Ease("dt.disk", m.Disk.MaxDiskTemp()), 0, 120)
@@ -537,12 +537,12 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 		cpuRPM, boxRPM := p.fanSpeeds(d)
 		DrawPartsTop(c, fs, DPadX+DPad, dtTempY+113, FzMeta, []TPart{
 			{S: "风扇", Col: colDim},
-			{S: "CPU", Col: colDim, Latin: true, Gap: 8},
-			{S: cpuRPM, Col: colSub, Latin: true, Gap: 4},
-			{S: "·", Col: colTab, Gap: 7},
+			{S: "CPU", Col: colDim, Latin: true, Gap: 7},
+			{S: cpuRPM, Col: colSub, Latin: true, Gap: 3},
+			{S: "·", Col: colTab, Gap: 8},
 			{S: "机箱", Col: colDim, Gap: 7},
-			{S: boxRPM, Col: colSub, Latin: true, Gap: 4},
-			{S: "·", Col: colTab, Gap: 7},
+			{S: boxRPM, Col: colSub, Latin: true, Gap: 3},
+			{S: "·", Col: colTab, Gap: 8},
 			{S: fanModeCN(d.Fan.GetCPUMode()), Col: colDim, Gap: 7},
 		})
 	}
@@ -703,7 +703,7 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 		}
 		DrawPartsTop(c, fs, DPadX+DPad, syDevY+91, FzCard, []TPart{
 			{S: "飞牛 fnOS", Col: colDim},
-			{S: osVer, Col: colSub, Latin: true, Gap: 8},
+			{S: osVer, Col: colSub, Latin: true, Gap: 7},
 		})
 
 		// 第三行：型号 · CPU · 内存（含类型）· 盘位，一行说清"这是台什么机器"。
@@ -716,7 +716,7 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 		spec := []TPart{{S: devName, Col: colSub}}
 		if cpu := shortCPU(m.CPUModel); cpu != "" {
 			spec = append(spec,
-				TPart{S: "·", Col: colTab, Gap: 7},
+				TPart{S: "·", Col: colTab, Gap: 8},
 				TPart{S: cpu, Col: colSub, Latin: true, Gap: 7})
 		}
 		memTxt := fmt.Sprintf("%.1f GB", m.MemTotalGB)
@@ -727,11 +727,11 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 			memTxt = m.MemType + " " + memTxt
 		}
 		spec = append(spec,
-			TPart{S: "·", Col: colTab, Gap: 7},
+			TPart{S: "·", Col: colTab, Gap: 8},
 			TPart{S: memTxt, Col: colDim, Latin: true, Gap: 7})
 		if m.BayCount > 0 {
 			spec = append(spec,
-				TPart{S: "·", Col: colTab, Gap: 7},
+				TPart{S: "·", Col: colTab, Gap: 8},
 				TPart{S: fmt.Sprintf("%d 盘位", m.BayCount), Col: colDim, Gap: 7})
 		}
 		DrawPartsTop(c, fs, DPadX+DPad, syDevY+115, FzMeta, spec)
