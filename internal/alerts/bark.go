@@ -17,6 +17,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"r1-toolbox/internal/logx"
 )
 
 // Bark URL 提供器做成函数：面板改 key 后立即生效，不用重启引擎
@@ -26,7 +28,7 @@ type Bark struct {
 }
 
 func NewBark(getURL func() string) *Bark {
-	return &Bark{GetURL: getURL, client: &http.Client{Timeout: 6 * time.Second}}
+	return &Bark{GetURL: getURL, client: &http.Client{Timeout: 45 * time.Second}}
 }
 
 // Push 发一条。Bark 的 HTTP 200 即认为送达（它自己负责转 APNs）。
@@ -46,6 +48,10 @@ func (b *Bark) Push(title, body string) error {
 	u := strings.TrimRight(base, "/") + "/" +
 		url.PathEscape(title) + "/" + url.PathEscape(body)
 
+	// 45s 超时的依据：api.day.app 走旁路由 fake-ip 代理链路实测 30s+
+	// 才返回 200（2026-11-01 设备实测）。推送在独立协程执行，长超时
+	// 不阻塞任何主流程；短超时反而把"慢而通"的链路当成失败。
+	t0 := time.Now()
 	resp, err := b.client.Get(u)
 	if err != nil {
 		return err
@@ -54,5 +60,6 @@ func (b *Bark) Push(title, body string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("bark 返回 %d", resp.StatusCode)
 	}
+	logx.Printf("【Bark】送达 %.1fs", time.Since(t0).Seconds())
 	return nil
 }
