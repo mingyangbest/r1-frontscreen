@@ -3,10 +3,10 @@ package ui
 import (
 	"bytes"
 	"fmt"
-	"strings"
 	"image"
 	"image/png"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -48,8 +48,8 @@ type Renderer struct {
 	// 预览协程只读这两个指针，不碰 pages 本体。
 	pagesSnap   atomic.Pointer[[]string]
 	accentsSnap atomic.Pointer[[]RGBA]
-	pages []Page
-	cur   int
+	pages       []Page
+	cur         int
 
 	// 页面切换动画
 	animFrom int

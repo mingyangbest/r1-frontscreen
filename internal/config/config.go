@@ -465,7 +465,7 @@ func DefaultConfig() *Config {
 			CPU: FanCurve{Mode: "auto", PWMIndex: 3, TempSensor: "it8628:temp1", MinTemp: 35, MaxTemp: 75, MinSpeed: 50, MaxSpeed: 255},
 			HDD: FanCurve{Mode: "auto", PWMIndex: 2, TempSensor: "it8628:temp2", MinTemp: 40, MaxTemp: 60, MinSpeed: 50, MaxSpeed: 255},
 		},
-		Web:     WebConfig{Enabled: true, Port: 8080},
+		Web: WebConfig{Enabled: true, Port: 8080},
 		Display: DisplayConfig{Theme: "ink", Clock24: true, Weather: true, SampleSec: 2,
 			PageOrder: []string{"env", "detail", "system"},
 			PagesOn:   []string{"env", "detail", "system"}},
