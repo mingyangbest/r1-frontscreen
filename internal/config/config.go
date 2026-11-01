@@ -29,6 +29,7 @@ type Config struct {
 	RGB      RGBConfig      `yaml:"rgb"`
 	Fan      FanConfig      `yaml:"fan"`
 	Web      WebConfig      `yaml:"web"`
+	Display  DisplayConfig  `yaml:"display"`
 	Hardware HardwareConfig `yaml:"hardware"`
 	// Debug 打开明细日志（性能/采样审计）。默认关 —— 见 internal/logx。
 	Debug bool `yaml:"debug"`
@@ -40,10 +41,13 @@ type ScreenConfig struct {
 	Brightness int `yaml:"brightness"`
 	// NightBrightness 夜间（18:00–06:00，与天气图标同一窗口）自动调暗后的
 	// 背光值，0 = 关闭夜间调暗。只在昼夜切换瞬间生效，不覆盖手动调节。
-	NightBrightness int    `yaml:"night_brightness"`
-	Timeout         int    `yaml:"timeout"`
-	Background      string `yaml:"background"`
-	TextColor       string `yaml:"text_color"`
+	NightBrightness int `yaml:"night_brightness"`
+	Timeout         int `yaml:"timeout"`
+	// Background / TextColor 是给"自定义背景图"预留的字段，**当前不生效**：
+	// 面板已撤掉入口，渲染侧也没有读取它们（详见 internal/ui/background.go
+	// 顶部说明）。留着是为了以后上这个功能时不必改配置文件格式。
+	Background string `yaml:"background"`
+	TextColor  string `yaml:"text_color"`
 }
 
 type RGBConfig struct {
@@ -76,10 +80,57 @@ type WebConfig struct {
 	Token string `yaml:"token"`
 }
 
+// DisplayConfig 屏幕内容本身的设置（与亮度/风扇那类硬件控制分开）。
+//
+// 全部是"看一眼就知道要不要求改"的开关，没有需要精密调的值 ——
+// 这块屏的默认排版是精修过的，这里的旋钮只是让用户能按自己的习惯改，
+// 不是让他重新设计。
+type DisplayConfig struct {
+	// Theme 启动时应用的主题：ink / mono / sand / jade
+	Theme string `yaml:"theme" json:"theme"`
+	// Clock24 false 用 12 小时制（3:04），true 用 24 小时制（15:04）
+	Clock24 bool `yaml:"clock_24h" json:"clock_24h"`
+	// Weather 首页右上角天气图标与描述是否显示
+	Weather bool `yaml:"weather" json:"weather"`
+	// SampleSec 屏幕数字的刷新间隔（秒），只允许 2 / 3 / 5
+	SampleSec int `yaml:"sample_seconds" json:"sample_seconds"`
+}
+
+// HardwareConfig 硬件节点路径
 type HardwareConfig struct {
 	BrightnessPath string `yaml:"brightness_path"`
 	HwmonPath      string `yaml:"hwmon_path"`
 	Framebuffer    string `yaml:"framebuffer"`
+}
+
+// normalize 把缺省/越界的显示设置拉回可用值。
+//
+// 为什么需要它：LoadFrom 是 `var cfg Config` 零值起步再 Unmarshal 的，
+// 老配置文件里根本没有 display 段 —— 那样 Clock24/Weather 会被解成 false，
+// 用户升级后会发现「12 小时制 + 天气没了」，但配置文件一个字都没动过。
+// 用 Theme 是否为空判断"这个段到底存不存在"：不存在就整套回默认；
+// 存在就只纠正越界值（主题名写错 → ink，采样间隔填 1 或 7 → 2）。
+func (c *Config) normalize() {
+	if c.Display.Theme == "" {
+		c.Display = DisplayConfig{Theme: "ink", Clock24: true, Weather: true, SampleSec: 2}
+		return
+	}
+	c.Display.Normalize()
+}
+
+// Normalize 把越界的值拉回可用值（不改"整段缺失"的判断，那是 Config 的事）。
+// 面板写配置时也走这里，保证落盘的永远是合法值。
+func (d *DisplayConfig) Normalize() {
+	switch d.Theme {
+	case "ink", "mono", "sand", "jade":
+	default:
+		d.Theme = "ink"
+	}
+	switch d.SampleSec {
+	case 2, 3, 5:
+	default:
+		d.SampleSec = 2
+	}
 }
 
 // Load 从默认路径读取配置。文件不存在返回默认值，格式损坏返回 error
@@ -100,6 +151,7 @@ func LoadFrom(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return DefaultConfig(), fmt.Errorf("解析配置 %s: %w", path, err)
 	}
+	cfg.normalize()
 	return &cfg, nil
 }
 
@@ -332,7 +384,8 @@ func DefaultConfig() *Config {
 			CPU: FanCurve{Mode: "auto", PWMIndex: 3, TempSensor: "it8628:temp1", MinTemp: 35, MaxTemp: 75, MinSpeed: 50, MaxSpeed: 255},
 			HDD: FanCurve{Mode: "auto", PWMIndex: 2, TempSensor: "it8628:temp2", MinTemp: 40, MaxTemp: 60, MinSpeed: 50, MaxSpeed: 255},
 		},
-		Web: WebConfig{Enabled: true, Port: 8080},
+		Web:     WebConfig{Enabled: true, Port: 8080},
+		Display: DisplayConfig{Theme: "ink", Clock24: true, Weather: true, SampleSec: 2},
 		Hardware: HardwareConfig{
 			BrightnessPath: "/sys/devices/pci0000:00/0000:00:02.0/drm/card0/card0-DSI-1/intel_backlight/brightness",
 			HwmonPath:      "/sys/class/hwmon/hwmon3",

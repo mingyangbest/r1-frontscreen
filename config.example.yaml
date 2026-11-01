@@ -39,6 +39,17 @@ fan:
 web:
   enabled: true
   port: 8080
+  # token 首次启动自动生成并回写到本文件；所有 /api/* 要求 X-Token 头。
+  # 屏上默认只显示「已设置」，点一下系统页底部的令牌药丸可看明文 10 秒。
+  # 泄露了就改这里并重启服务（没有轮换接口）。
+  token: ""
+
+# 显示设置（管屏幕显示什么，与亮度/风扇那类硬件控制分开）
+display:
+  theme: ink          # ink=墨 / mono=素 / sand=沙 / jade=青
+  clock_24h: true     # false = 12 小时制（3:04，不带 AM/PM）
+  weather: true       # 首页右上角天气图标与描述
+  sample_seconds: 2   # 屏幕数字刷新间隔，只接受 2 / 3 / 5
 
 # 硬件路径
 hardware:

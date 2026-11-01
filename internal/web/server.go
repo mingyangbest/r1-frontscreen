@@ -25,6 +25,10 @@ type Server struct {
 	config     *config.Store
 	screen     *screen.Control
 	guard      *authGuard
+
+	// OnDisplay 显示设置变更后的回调（主程序注入：把改动立刻推到屏幕上）。
+	// 为 nil 时只落盘，重启后生效 —— 面板不该因为屏幕没接上就拒绝保存。
+	OnDisplay func(config.DisplayConfig)
 }
 
 // NewServer 组装 Web 面板。
@@ -87,6 +91,9 @@ func (s *Server) setupRoutes() {
 
 	router.GET("/", s.handleIndex)
 	router.GET("/api/status", s.handleStatus)
+	router.GET("/api/config", s.handleConfig)
+	router.GET("/api/display", s.handleDisplayGet)
+	router.POST("/api/display", s.handleDisplaySet)
 	router.GET("/api/hwmon/scan", s.handleHwmonScan)
 	router.POST("/api/brightness", s.handleBrightness)
 	router.POST("/api/screen/timeout", s.handleScreenTimeout)
@@ -213,7 +220,7 @@ const tokenBootstrap = `<script>
     h.set('X-Token',localStorage.getItem(KEY)||'');
     return orig(input,Object.assign({},init,{headers:h})).then(function(r){
       if(r.status!==401) return r;
-      var t=prompt('首次使用：请输入设备屏幕「系统」页显示的面板令牌');
+      var t=prompt('首次使用：请输入面板令牌。\n在 NAS 上执行 sudo grep token /etc/r1-toolbox/config.yaml 可查看。');
       if(!t) return r;
       localStorage.setItem(KEY,t.trim());
       return window.fetch(input,init);
@@ -261,6 +268,63 @@ func (s *Server) handleStatus(c *gin.Context) {
 		resp["hdd_temp"] = hddTemp
 	}
 	c.JSON(200, resp)
+}
+
+// handleConfig 返回面板初始化所需的**真实配置**。
+//
+// 2026-11-01：旧面板打开时把「PWM 3 / 启动 35°C / 全速 75°C」硬编码在前端，
+// 设备上实际的曲线是别的值 —— 面板一打开就在说谎，用户照着调反而把好的改成坏的。
+// 这里只回显可调项，**绝不返回 web.token**（令牌只走屏幕/配置文件）。
+func (s *Server) handleConfig(c *gin.Context) {
+	cfg := s.config.Get()
+
+	fan := func(f config.FanCurve) gin.H {
+		return gin.H{
+			"mode":        f.Mode,
+			"pwm_index":   f.PWMIndex,
+			"temp_sensor": f.TempSensor,
+			"min_temp":    f.MinTemp,
+			"max_temp":    f.MaxTemp,
+		}
+	}
+
+	c.JSON(200, gin.H{
+		"screen": gin.H{
+			"brightness":       cfg.Screen.Brightness,
+			"brightness_max":   s.brightness.Max(),
+			"night_brightness": cfg.Screen.NightBrightness,
+			"timeout":          cfg.Screen.Timeout,
+		},
+		"fan": gin.H{"cpu": fan(cfg.Fan.CPU), "hdd": fan(cfg.Fan.HDD)},
+		"rgb": gin.H{"mode": cfg.RGB.Mode, "color": cfg.RGB.Color},
+		"web": gin.H{"port": cfg.Web.Port, "token_set": cfg.Web.Token != ""},
+	})
+}
+
+func (s *Server) handleDisplayGet(c *gin.Context) {
+	c.JSON(200, s.config.Get().Display)
+}
+
+// handleDisplaySet 保存显示设置并立刻应用。
+//
+// 校验放在 config.DisplayConfig.Normalize 里而不是复制一份规则：
+// 面板能写什么，启动时就能读什么，两边永远同一套约束。
+func (s *Server) handleDisplaySet(c *gin.Context) {
+	var req config.DisplayConfig
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	req.Normalize()
+
+	if err := s.config.Update(func(cfg *config.Config) { cfg.Display = req }); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if s.OnDisplay != nil {
+		s.OnDisplay(req)
+	}
+	c.JSON(200, gin.H{"success": true, "display": req})
 }
 
 func (s *Server) handleHwmonScan(c *gin.Context) {

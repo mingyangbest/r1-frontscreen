@@ -192,7 +192,7 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 		// 时钟加粗（洋哥 2026-10-30：首页时间要更"实"）。规范第四节写的是
 		// 「最细体」，实机看细体 100px 在深底上有点飘，粗体更有压场感。
 		DrawPartsTop(c, fs, DPadX, envClockY, FzClock,
-			[]TPart{{S: d.Now.Format("15:04"), Col: colWhite, Latin: true, Bold: true}})
+			[]TPart{{S: d.ClockText(), Col: colWhite, Latin: true, Bold: true}})
 
 		wx := d.WeatherNow()
 		kind := wx.Kind
@@ -204,7 +204,7 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 		parts := []TPart{
 			{S: d.Now.Format("01月02日") + " " + weekdayCN(d.Now), Col: colDim},
 		}
-		if wx.OK {
+		if wx.OK && d.WeatherOn {
 			parts = append(parts,
 				TPart{S: "  ·  ", Col: colTab},
 				TPart{S: wx.Desc, Col: Lit(wxAcc, 0.30)},
@@ -220,7 +220,9 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 		// x 270..372 这 102px，直径上限约 100px —— 46 已经接近这条硬上限。
 		// 中心 (318,96)：圆右沿 364、云体右沿约 368（距屏右 8px）、
 		// 上沿 50、下沿 142（日期行 174 之上），左沿 272 不压时钟。
-		DrawWeatherIcon(c, 318, 96, 46, kind, 2.856)
+		if d.WeatherOn {
+			DrawWeatherIcon(c, 318, 96, 46, kind, 2.856)
+		}
 	}
 
 	// ---------------- 三张指标小卡 ----------------
@@ -319,8 +321,10 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 		// 曲线框 658..776（h=118）：网格实测 688 / 717 / 747，等距 29.5。
 		// 框顶比第一行速率还高一截 —— 速率文字是压在曲线区右上角的，不是分区排列。
 		// 底板只铺一次；下行先画（带面积 + 脉冲点），上行后画成细线压在网格之上。
+		// 面积填充只在 CPU 图上做（洋哥 2026-11-01）：
+		// 网络卡双曲线 + 面积会糊成一片，只压淡网格线、不加填充。
 		c.PlotFloor(DPadX+DPad, envNetY+72, DCardW-2*DPad, 118, colMint)
-		c.Graph(DPadX+DPad, envNetY+72, DCardW-2*DPad, 118, recv, scale, 60, colMint, 0.12)
+		c.Graph(DPadX+DPad, envNetY+72, DCardW-2*DPad, 118, recv, scale, 60, colMint, 0)
 		c.Curve(DPadX+DPad, envNetY+72, DCardW-2*DPad, 118, send, scale, 60, colSlate, 1.5, 0)
 
 		// 速率文字最后画：它压在曲线区右上角（参考图就是这个结构），
@@ -871,16 +875,29 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 		DPill(c, DPadX, syPillY, 166, 40)
 		DPillDot(c, DPadX+16, syPillY+20, colMint)
 		tok := d.WebToken
-		// 令牌**明文不上屏**：参考图这一格写的是「令牌」+ 一串小信号条，
+		// 令牌**默认不上屏**：参考图这一格写的是「令牌」+ 一串小信号条，
 		// 令牌值本身没有出现。墙上挂着的屏幕谁路过都能看见，把面板令牌
-		// 印在上面等于把钥匙贴门上。这里只报"设没设置"，值去 Web 面板看。
-		DrawPartsTop(c, fs, DPadX+28, syPillY+12, FzMeta,
-			splitParts("令牌", colSub))
-		lit := 0
-		if tok != "" {
-			lit = 6
+		// 印在上面等于把钥匙贴门上。
+		//
+		// 但「完全不显示」把用户逼进了死胡同：浏览器首次打开面板要令牌，
+		// 提示却让他看屏幕 —— 屏幕上看不到。所以改成**点了才亮**：
+		// 触摸药丸 → 明文显示 10 秒（物理接触即授权），过后自动回到信号条。
+		if d.TokenRevealLeft() > 0 {
+			// 只画令牌本身，不画倒计时：这一格每 2 秒才随采样重绘一次，
+			// 倒计时会跳着走（10→8→6），看着像卡住。到点后下一次采样
+			// 自动回到信号条，最多多留 2 秒，肉眼无感。
+			DrawPartsTop(c, fs, DPadX+28, syPillY+11, FzCard, []TPart{
+				{S: tok, Col: colMint, Latin: true, Bold: true},
+			})
+		} else {
+			DrawPartsTop(c, fs, DPadX+28, syPillY+12, FzMeta,
+				splitParts("令牌", colSub))
+			lit := 0
+			if tok != "" {
+				lit = 6
+			}
+			DTokBars(c, DPadX+66, syPillY+24, lit, colMint)
 		}
-		DTokBars(c, DPadX+66, syPillY+24, lit, colMint)
 
 		DPill(c, DPadX+178, syPillY, DCardW-178, 40)
 		upd := "—"
@@ -916,8 +933,14 @@ func DTokBars(c *Canvas, x, yBase, lit int, accent RGBA) {
 	}
 }
 
-// Tap 触屏：亮度滑条左半 -10% / 右半 +10%；关屏按钮触发 OnScreenOff。
+// Tap 触屏：令牌药丸亮明文 10 秒；亮度滑条左半 -10% / 右半 +10%；
+// 关屏按钮触发 OnScreenOff。
 func (p *SysPage) Tap(x, y int, d *DrawCtx) {
+	// 令牌药丸（最底一行，不与上面两张卡重叠）
+	if x >= DPadX && x <= DPadX+166 && y >= syPillY && y <= syPillY+40 {
+		d.RevealToken(10 * time.Second)
+		return
+	}
 	// 关屏按钮（先判：按钮在下方，与亮度行不重叠）
 	if x >= DPadX+DPad && x <= DPadX+DCardW-DPad && y >= syCtrlY+100 && y <= syCtrlY+138 {
 		if d.OnScreenOff != nil {

@@ -20,6 +20,8 @@ type Sampler struct {
 	mon  *SystemMonitor
 	ver  atomic.Uint64
 	stop chan struct{}
+	// fast 采样周期，由配置决定（2/3/5 秒）。默认 2 秒。
+	fast time.Duration
 }
 
 // 采样周期
@@ -29,8 +31,16 @@ const (
 	slowFirst = 5 * time.Second  // 首轮延后，别和启动首帧抢 CPU
 )
 
-func NewSampler(mon *SystemMonitor) *Sampler {
-	return &Sampler{mon: mon, stop: make(chan struct{})}
+// NewSampler every 是屏幕数字的刷新周期；<=0 用默认 2 秒。
+//
+// 调慢只省 CPU（每轮采样是读 /proc + 算差分，2 秒一次不到 0.1%），
+// 代价是屏幕上的数字变"钝"——放在面板里是给用户按需取舍的开关，
+// 不是性能优化项。
+func NewSampler(mon *SystemMonitor, every time.Duration) *Sampler {
+	if every <= 0 {
+		every = fastEvery
+	}
+	return &Sampler{mon: mon, stop: make(chan struct{}), fast: every}
 }
 
 // Start 启动两条采样协程（非阻塞）
@@ -47,7 +57,7 @@ func (s *Sampler) Stop() { close(s.stop) }
 func (s *Sampler) Version() uint64 { return s.ver.Load() }
 
 func (s *Sampler) fastLoop() {
-	t := time.NewTicker(fastEvery)
+	t := time.NewTicker(s.fast)
 	defer t.Stop()
 
 	// 立即采一次：屏幕不用等 2 秒才从 0 跳到真实值

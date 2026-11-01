@@ -29,6 +29,19 @@ type DrawCtx struct {
 	// WebToken 面板令牌，显示在系统页底部 —— 「物理接触设备即授权」，
 	// 不需要去翻 journal 找。
 	WebToken string
+	// Clock24h 24 小时制（true 显示 15:04，false 显示 3:04）
+	Clock24h bool
+	// WeatherOn 首页右上角天气图标与描述是否显示
+	WeatherOn bool
+
+	// TokenRevealUntil 令牌明文展示的截止时刻。
+	//
+	// 默认只画「已设置」信号条：屏幕挂在墙上，谁路过都能看见，把 8 位令牌
+	// 常年印在上面等于把钥匙贴门上。但完全不显示又走了另一个极端 ——
+	// 浏览器首次打开面板要令牌，用户不知道去哪找（旧文案甚至让他看屏幕，
+	// 而屏幕上根本没有）。折中：**点一下药丸才亮 10 秒**，物理接触即授权，
+	// 松手就走，墙上路过的人看不到。
+	TokenRevealUntil time.Time
 
 	// OnScreenOff 由主程序注入：请求立即关屏（并可被触摸唤醒）
 	OnScreenOff func()
@@ -55,6 +68,37 @@ type DrawCtx struct {
 // BumpData 数据采样完成后调用，宣告"屏幕上的数字全部需要刷新"
 func (d *DrawCtx) BumpData() { d.dataGen++ }
 
+// ClockText 大时钟文本。
+//
+// 12 小时制不带 AM/PM：这块屏的时钟是 88px 粗体的主角，后面缀一个
+// 「PM」会和天气图标抢位置，而"上午/下午"对挂在家里的一块屏没有信息量。
+// 用 12 小时制的人看「3:04」本来就懂是下午三点 —— 那是他们的习惯。
+func (d *DrawCtx) ClockText() string {
+	if d.Clock24h {
+		return d.Now.Format("15:04")
+	}
+	return d.Now.Format("3:04")
+}
+
+// RevealToken 让令牌明文在屏上显示 d 时长（系统页点药丸时调用）。
+// 返回 false 表示没有令牌可显示（未生成）—— 调用方不必额外提示。
+func (d *DrawCtx) RevealToken(dur time.Duration) bool {
+	if d.WebToken == "" {
+		return false
+	}
+	d.TokenRevealUntil = time.Now().Add(dur)
+	d.BumpData()
+	return true
+}
+
+// TokenRevealLeft 令牌明文还剩多久；<=0 表示当前不该显示。
+func (d *DrawCtx) TokenRevealLeft() time.Duration {
+	if d.WebToken == "" || d.TokenRevealUntil.IsZero() {
+		return 0
+	}
+	return time.Until(d.TokenRevealUntil)
+}
+
 // DataGen 当前数据代数
 func (d *DrawCtx) DataGen() uint64 { return d.dataGen }
 
@@ -64,7 +108,12 @@ func (d *DrawCtx) Easing() bool { return d.easing }
 func NewDrawCtx(fs *FontSet) *DrawCtx {
 	host, _ := os.Hostname()
 	return &DrawCtx{
-		Fonts:     fs,
+		Fonts: fs,
+		// 默认值与历史行为一致：24 小时制、天气开。
+		// 写成零值(false)会让"没读配置"的调用方（预览、测试）突然变成
+		// 12 小时制且没有天气 —— 屏幕看起来像坏了，实际是默认值错了。
+		Clock24h:  true,
+		WeatherOn: true,
 		Theme:     themeInk,
 		anim:      map[string]*animState{},
 		Now:       time.Now(),

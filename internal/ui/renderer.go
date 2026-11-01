@@ -379,6 +379,18 @@ func (r *Renderer) Tick(now time.Time) {
 	r.animT = t
 }
 
+// ApplyDisplay 套用显示设置（时钟制式 / 天气开关）。
+//
+// 会被 Web 面板的另一个协程调用，与 SetScreenOff 同一套约定：只写
+// DrawCtx 的两个 bool 再置 needFull。读侧最多看到一帧"半新半旧"，
+// 下一帧就一致了 —— 比为一个开关引入整页互斥锁便宜得多。
+func (r *Renderer) ApplyDisplay(dc config.DisplayConfig) {
+	r.Ctx.Clock24h = dc.Clock24
+	r.Ctx.WeatherOn = dc.Weather
+	// 时钟字号/天气图标都是大块内容，局部重绘算不准影响范围，直接整页
+	r.needFull = true
+}
+
 // SetTheme 切换主题并重建背景
 func (r *Renderer) SetTheme(name string) {
 	r.theme = ThemeByName(name)

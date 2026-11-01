@@ -32,6 +32,14 @@ var (
 
 // genWebToken 生成 8 位面板令牌。字符集剔除 0/O/1/I/L 等易混字符，
 // 屏幕小字上抄写不会认错。
+// clockModeText 日志用：把布尔值翻成人话
+func clockModeText(h24 bool) string {
+	if h24 {
+		return "24 小时制"
+	}
+	return "12 小时制"
+}
+
 func genWebToken() (string, error) {
 	const alphabet = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
 	b := make([]byte, 8)
@@ -157,6 +165,13 @@ func main() {
 	rendererPtr.Store(renderer)
 	renderer.Ctx.WebToken = store.Get().Web.Token
 
+	// 显示设置：主题必须在首帧之前定下来，否则用户会先看到 ink 闪一下
+	// 再跳到他选的主题（rebuildBackground + needFull 也白做一次）。
+	if dc := store.Get().Display; dc.Theme != "" && dc.Theme != renderer.Theme().Name {
+		renderer.SetTheme(dc.Theme)
+	}
+	renderer.ApplyDisplay(store.Get().Display)
+
 	// 启动即按昼夜定亮度：夜里重启服务不再被白天亮度闪一下眼
 	brightness.Set(screenCtl.Target())
 	logx.Printf("背光初始值 %d（%s）", screenCtl.Target(), dayNightText())
@@ -168,7 +183,7 @@ func main() {
 	// CPU/内存/网络 2 秒、磁盘/Docker 60 秒，全部在独立协程里跑。
 	// 渲染线程每帧只取一次快照（值拷贝），smartctl 的 359ms 与
 	// Docker socket 的 3 秒超时再也卡不到触摸响应。
-	sampler := monitor.NewSampler(mon)
+	sampler := monitor.NewSampler(mon, time.Duration(cfg.Display.SampleSec)*time.Second)
 	sampler.Start()
 	defer sampler.Stop()
 
@@ -186,6 +201,15 @@ func main() {
 	// ---------------- Web 面板 ----------------
 	if cfg.Web.Enabled && cfg.Web.Token != "" {
 		webServer := web.NewServer(mon, fanCtrl, rgbCtrl, brightness, store, screenCtl)
+		// 面板改了显示设置 → 立刻反映到屏幕上（不必重启服务）
+		webServer.OnDisplay = func(dc config.DisplayConfig) {
+			if dc.Theme != renderer.Theme().Name {
+				renderer.SetTheme(dc.Theme)
+			}
+			renderer.ApplyDisplay(dc)
+			logx.Printf("【显示】主题 %s · %s · 天气 %v · 采样 %d 秒",
+				dc.Theme, clockModeText(dc.Clock24), dc.Weather, dc.SampleSec)
+		}
 		go func() {
 			addr := fmt.Sprintf(":%d", cfg.Web.Port)
 			logx.Printf("Web 面板启动在 %s", addr)
