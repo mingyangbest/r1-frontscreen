@@ -18,7 +18,7 @@
 
 | 浅色 | 深色 |
 |:---:|:---:|
-| ![面板浅色](docs/screenshots/panel-light.png) | ![面板深色](docs/screenshots/panel-dark.png) |
+| ![面板浅色](docs/screenshots/panel-light.png?v=094) | ![面板深色](docs/screenshots/panel-dark.png?v=094) |
 
 *面板只围着这块屏转：实时预览（与屏幕同一份采样离屏重绘）、页面显隐与顺序、亮度与开关屏、风扇曲线与 PWM 映射、灯效、显示设置（主题 / 12–24 小时制 / 天气 / 刷新节奏）、异常告警（阈值 / Bark 推送 / 触发与恢复记录）、硬件扫描。不做容器编排，也不复刻 fnOS 自带的系统管理。屏幕顶部有异常时会出现一条通栏横幅（常态不显示——无横幅本身就是「一切正常」的信号）。*
 

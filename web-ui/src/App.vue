@@ -44,31 +44,6 @@
         <span v-html="banner.text"></span>
       </div>
 
-      <!-- ── 实时预览 ── -->
-      <section class="card">
-        <div class="hd">
-          <span class="sq" style="background:#0d9488"></span>
-          <h2>实时预览</h2>
-          <span class="en">LIVE PREVIEW</span>
-          <label class="auto"><input type="checkbox" v-model="previewAuto" /> 15 秒自动刷新</label>
-        </div>
-        <div class="bd pv">
-          <div class="pv-side">
-            <button v-for="n in display.pages" :key="n" class="btn ghost pv-btn"
-                    :class="{ on: previewPage === n }" @click="loadPreview(n)">{{ pageLabels[n] }}</button>
-            <button class="btn ghost sm" @click="refreshPreview" :class="{ busy: previewBusy }">刷新</button>
-          </div>
-          <div class="pv-shot">
-            <img v-if="previewSrc" :src="previewSrc" alt="屏幕预览" @load="previewBusy = false" />
-            <div v-else class="empty">选择左侧页面开始预览</div>
-          </div>
-          <div class="pv-note">
-            <b>这是离屏重绘，不是截屏</b>：与屏幕共用同一份采样与设置，改动立即反映；
-            但天气图标动画相位、入场编排、夜间背光不会体现在预览里。
-          </div>
-        </div>
-      </section>
-
       <!-- ── 指标 ── -->
       <div class="kpis">
         <div class="kpi">
@@ -125,315 +100,347 @@
         </div>
       </div>
 
-      <!-- ── 屏幕 ── -->
-      <section class="card">
-        <div class="hd">
-          <span class="sq"></span>
-          <h2>屏幕</h2>
-          <span class="en">DISPLAY</span>
-          <span class="hd-right">{{ screenOff ? '屏幕已关闭' : '屏幕点亮中' }}</span>
-        </div>
-        <div class="bd">
-          <div class="row">
-            <div class="field grow">
-              <label>屏幕亮度</label>
-              <div class="slider-wrap">
-                <input class="range" type="range" min="0" :max="brightMax" step="200"
-                       v-model.number="brightness" @input="onBrightness" />
-                <span class="val">{{ brightnessPct }}%</span>
+      <div class="cols">
+        <div class="col">
+          <!-- ── 实时预览 ── -->
+          <section class="card">
+            <div class="hd">
+              <span class="sq" style="background:#0d9488"></span>
+              <h2>实时预览</h2>
+              <span class="en">LIVE PREVIEW</span>
+              <label class="auto"><input type="checkbox" v-model="previewAuto" /> 15 秒自动刷新</label>
+            </div>
+            <div class="bd pv">
+              <div class="pv-side">
+                <button v-for="n in display.pages" :key="n" class="btn ghost pv-btn"
+                        :class="{ on: previewPage === n }" @click="loadPreview(n)">{{ pageLabels[n] }}</button>
+                <button class="btn ghost sm" @click="refreshPreview" :class="{ busy: previewBusy }">刷新</button>
+              </div>
+              <div class="pv-shot">
+                <img v-if="previewSrc" :src="previewSrc" alt="屏幕预览" @load="previewBusy = false" />
+                <div v-else class="empty">选择左侧页面开始预览</div>
+              </div>
+              <div class="pv-note">
+                <b>这是离屏重绘，不是截屏</b>：与屏幕共用同一份采样与设置，改动立即反映；
+                但天气图标动画相位、入场编排、夜间背光不会体现在预览里。
               </div>
             </div>
-            <div class="field">
-              <label>开关屏</label>
-              <button class="btn" :class="offArmed ? 'danger' : 'ghost'" @click="toggleScreen">
-                {{ offArmed ? '确认关闭？' : (screenOff ? '点亮屏幕' : '关闭屏幕') }}
-              </button>
-            </div>
-          </div>
+          </section>
 
-          <div class="row top">
-            <div class="field">
-              <label>自动关屏</label>
-              <div class="inline">
-                <input class="num" type="number" min="0" max="3600" v-model.number="timeout" />
-                <span class="unit">{{ timeout ? '秒' : '常亮' }}</span>
-                <button class="btn ghost sm" @click="saveTimeout">应用</button>
-              </div>
-              <div class="hint">0 = 常亮，不自动息屏</div>
+          <!-- ── 告警 ── -->
+          <section class="card">
+            <div class="hd">
+              <span class="sq" style="background:#dc2626"></span>
+              <h2>告警</h2>
+              <span class="en">ALERTS</span>
+              <span class="hd-right">{{ alerts.active.length ? alerts.active.length + ' 项异常' : '一切正常' }}</span>
             </div>
-            <div class="field">
-              <label>夜间亮度</label>
-              <div class="inline">
-                <span class="ro">{{ nightPct }}%</span>
-                <span class="unit">18:00–06:00</span>
-              </div>
-              <div class="hint">随昼夜切换自动应用，不覆盖手动调节</div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-
-      <!-- ── 显示 ── -->
-      <section class="card">
-        <div class="hd">
-          <span class="sq" style="background:#0891b2"></span>
-          <h2>显示</h2>
-          <span class="en">APPEARANCE</span>
-          <span class="hd-right">改完即生效</span>
-        </div>
-        <div class="bd">
-          <div class="row">
-            <div class="field">
-              <label>主题</label>
-              <div class="seg">
-                <span v-for="t in themes" :key="t.v" :class="{ on: display.theme === t.v }"
-                      @click="setDisplay('theme', t.v)">{{ t.t }}</span>
-              </div>
-            </div>
-            <div class="field">
-              <label>时钟</label>
-              <div class="seg">
-                <span :class="{ on: display.clock_24h }" @click="setDisplay('clock_24h', true)">24 小时</span>
-                <span :class="{ on: !display.clock_24h }" @click="setDisplay('clock_24h', false)">12 小时</span>
-              </div>
-            </div>
-            <div class="field">
-              <label>天气</label>
-              <div class="seg">
-                <span :class="{ on: display.weather }" @click="setDisplay('weather', true)">显示</span>
-                <span :class="{ on: !display.weather }" @click="setDisplay('weather', false)">隐藏</span>
-              </div>
-            </div>
-
-            <div class="field">
-              <label>刷新节奏</label>
-              <div class="seg">
-                <span v-for="n in [2, 3, 5]" :key="n" :class="{ on: display.sample_seconds === n }"
-                      @click="setDisplay('sample_seconds', n)">{{ n }} 秒</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="row top">
-            <div class="field grow">
-              <label>页面与顺序</label>
-              <div class="prow" v-for="(n, i) in display.page_order" :key="n">
-                <span class="pname" :class="{ off: !display.pages.includes(n) }">{{ pageLabels[n] }}</span>
-                <div class="seg">
-                  <span :class="{ on: display.pages.includes(n) }" @click="togglePage(n)">显示</span>
-                  <span :class="{ on: !display.pages.includes(n) }" @click="togglePage(n)">隐藏</span>
-                </div>
-                <button class="btn ghost sm" @click="movePage(i, -1)" :disabled="i === 0">↑</button>
-                <button class="btn ghost sm" @click="movePage(i, 1)" :disabled="i === display.page_order.length - 1">↓</button>
-              </div>
-              <div class="hint">翻页只在「显示」的页之间循环，页签也只画启用的；隐藏的页保留在列表里，随时可以再打开。</div>
-            </div>
-          </div>
-
-          <div class="hint mt">主题与时钟立刻生效；刷新节奏改动后，新周期从下一次采样开始算。</div>
-        </div>
-      </section>
-
-      <!-- ── 告警 ── -->
-      <section class="card">
-        <div class="hd">
-          <span class="sq" style="background:#dc2626"></span>
-          <h2>告警</h2>
-          <span class="en">ALERTS</span>
-          <span class="hd-right">{{ alerts.active.length ? alerts.active.length + ' 项异常' : '一切正常' }}</span>
-        </div>
-        <div class="bd">
-          <div v-if="alerts.active.length" class="alist">
-            <div class="arow" v-for="a in alerts.active" :key="a.key">
-              <span class="asev" :class="a.sev">{{ a.sev === 'crit' ? '故障' : '预警' }}</span>
-              <span class="atxt">{{ a.text }}</span>
-            </div>
-          </div>
-          <div v-else class="empty">当前没有活跃告警 —— 屏幕顶部也不会有横幅。</div>
-
-          <div class="row top mt">
-            <div class="field">
-              <label>温度预警 / 故障（°C）</label>
-              <div class="inline">
-                <input class="num xs" type="number" v-model.number="alertForm.temp_warn" />
-                <span class="unit">/</span>
-                <input class="num xs" type="number" v-model.number="alertForm.temp_crit" />
-                <button class="btn ghost sm" @click="saveAlerts()">应用</button>
-              </div>
-            </div>
-            <div class="field">
-              <label>磁盘容量预警（%）</label>
-              <div class="inline">
-                <input class="num xs" type="number" v-model.number="alertForm.disk_warn" />
-                <button class="btn ghost sm" @click="saveAlerts()">应用</button>
-              </div>
-            </div>
-          </div>
-
-          <div class="row top mt">
-            <div class="field grow">
-              <label>Bark 推送 {{ alerts.bark_set ? '（已设置，留空保存则不修改）' : '（未设置）' }}</label>
-              <div class="inline">
-                <input class="txt" type="password" v-model="alertForm.bark_url"
-                       placeholder="https://api.day.app/你的key" autocomplete="off" />
-                <button class="btn ghost sm" @click="saveBark()">保存</button>
-                <button class="btn primary sm" @click="testBark()">发送测试</button>
-              </div>
-              <div class="hint">仅支持 https；key 只写入设备配置文件，接口不回显。</div>
-            </div>
-          </div>
-
-          <div v-if="alerts.events.length" class="mt">
-            <label class="lab">最近记录</label>
-            <div class="hwrow" v-for="(e, i) in alerts.events" :key="i">
-              <span class="hwkey">{{ fmtTime(e.at) }}</span>
-              <span class="asev mini" :class="e.kind === 'trigger' ? e.sev : 'rec'">{{ e.kind === 'trigger' ? '触发' : '恢复' }}</span>
-              <span class="hwval">{{ e.text }}</span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- ── 自检 ── -->
-      <section class="card">
-        <div class="hd">
-          <span class="sq" style="background:#64748b"></span>
-          <h2>自检</h2>
-          <span class="en">SELF MONITOR</span>
-          <span class="hd-right">运行 {{ selfmon.uptime }}</span>
-        </div>
-        <div class="bd">
-          <div class="grid4">
-            <div class="k4">
-              <div class="k4l">进程 CPU（单核）</div>
-              <div class="k4v" :class="cpuCls">{{ selfmon.cpu_percent != null ? selfmon.cpu_percent.toFixed(2) : '—' }}%</div>
-              <div class="k4s">基线 2.1% · 上限 5%</div>
-            </div>
-            <div class="k4">
-              <div class="k4l">进程内存</div>
-              <div class="k4v">{{ selfmon.rss_mb != null ? selfmon.rss_mb.toFixed(1) : '—' }} MB</div>
-              <div class="k4s">goroutine {{ selfmon.goroutines ?? '—' }}</div>
-            </div>
-            <div class="k4">
-              <div class="k4l">平均帧耗时</div>
-              <div class="k4v" :class="selfmon.frame_max_ms > 33 ? 'warn' : ''">{{ selfmon.frame_avg_ms != null ? selfmon.frame_avg_ms.toFixed(1) : '—' }} ms</div>
-              <div class="k4s">最大 {{ selfmon.frame_max_ms != null ? selfmon.frame_max_ms.toFixed(1) : '—' }} ms · 慢帧 {{ selfmon.frame_slow ?? 0 }}</div>
-            </div>
-            <div class="k4">
-              <div class="k4l">采样</div>
-              <div class="k4v" :class="selfmon.last_sample_ago > 10 ? 'warn' : ''">
-                {{ selfmon.last_sample_ago == null || selfmon.last_sample_ago < 0 ? '—' : selfmon.last_sample_ago.toFixed(0) + 's 前' }}</div>
-              <div class="k4s">{{ selfmon.sample_count ?? 0 }} 次 · 失败 {{ selfmon.sample_errors ?? 0 }}</div>
-            </div>
-          </div>
-          <div class="hint mt">看门狗：{{ selfmon.watchdog_on ? `systemd 托管（${selfmon.watchdog_sec}s 心跳，主循环卡死自动重启）` : '未启用（非 systemd 环境或单元未配 WatchdogSec）' }}</div>
-        </div>
-      </section>
-
-      <!-- ── 风扇 + 灯效 ── -->
-      <div class="grid2">
-        <section class="card">
-          <div class="hd">
-            <span class="sq" style="background:#d97706"></span>
-            <h2>风扇</h2>
-            <span class="en">FANS</span>
-          </div>
-          <div class="bd">
-            <div class="fan" v-for="f in fanRows" :key="f.key">
-              <div class="fan-top">
-                <div class="fan-name">{{ f.name }}<span class="fan-sub">{{ f.sub }}</span></div>
-                <div class="seg">
-                  <span v-for="m in fanModes" :key="m.v" :class="{ on: f.mode === m.v }"
-                        @click="setFanMode(f.key, m.v)">{{ m.t }}</span>
+            <div class="bd">
+              <div v-if="alerts.active.length" class="alist">
+                <div class="arow" v-for="a in alerts.active" :key="a.key">
+                  <span class="asev" :class="a.sev">{{ a.sev === 'crit' ? '故障' : '预警' }}</span>
+                  <span class="atxt">{{ a.text }}</span>
                 </div>
               </div>
-              <div class="fan-curve">
-                <label>启动温度</label>
-                <input class="num sm" type="number" v-model.number="f.min" />
-                <span class="unit">°C</span>
-                <label>全速温度</label>
-                <input class="num sm" type="number" v-model.number="f.max" />
-                <span class="unit">°C</span>
-                <button class="btn ghost sm" @click="saveCurve(f)">应用</button>
+              <div v-else class="empty">当前没有活跃告警 —— 屏幕顶部也不会有横幅。</div>
+
+              <div class="row top mt">
+                <div class="field">
+                  <label>温度预警 / 故障（°C）</label>
+                  <div class="inline">
+                    <input class="num xs" type="number" v-model.number="alertForm.temp_warn" />
+                    <span class="unit">/</span>
+                    <input class="num xs" type="number" v-model.number="alertForm.temp_crit" />
+                    <button class="btn ghost sm" @click="saveAlerts()">应用</button>
+                  </div>
+                </div>
+                <div class="field">
+                  <label>磁盘容量预警（%）</label>
+                  <div class="inline">
+                    <input class="num xs" type="number" v-model.number="alertForm.disk_warn" />
+                    <button class="btn ghost sm" @click="saveAlerts()">应用</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="row top mt">
+                <div class="field grow">
+                  <label>Bark 推送 {{ alerts.bark_set ? '（已设置，留空保存则不修改）' : '（未设置）' }}</label>
+                  <div class="inline">
+                    <input class="txt" type="password" v-model="alertForm.bark_url"
+                           placeholder="https://api.day.app/你的key" autocomplete="off" />
+                    <button class="btn ghost sm" @click="saveBark()">保存</button>
+                    <button class="btn primary sm" @click="testBark()">发送测试</button>
+                  </div>
+                  <div class="hint">仅支持 https；key 只写入设备配置文件，接口不回显。</div>
+                </div>
+              </div>
+
+              <div v-if="alerts.events.length" class="mt">
+                <label class="lab">最近记录
+                  <span class="lnk" @click="eventsOpen = !eventsOpen">
+                    {{ eventsOpen ? '收起' : `展开全部 ${alerts.events.length} 条` }}</span>
+                </label>
+                <div class="hwrow" v-for="(e, i) in (eventsOpen ? alerts.events : alerts.events.slice(0, 5))" :key="i">
+                  <span class="hwkey">{{ fmtTime(e.at) }}</span>
+                  <span class="asev mini" :class="e.kind === 'trigger' ? e.sev : 'rec'">{{ e.kind === 'trigger' ? '触发' : '恢复' }}</span>
+                  <span class="hwval">{{ e.text }}</span>
+                </div>
               </div>
             </div>
-            <div class="hint mt">曲线只在「自动」模式生效：低于启动温度按最低转速，达到全速温度即满转。</div>
-          </div>
-        </section>
+          </section>
 
-        <section class="card">
+          <!-- ── 硬件 ── -->
+          <section class="card">
+            <div class="hd">
+              <span class="sq" style="background:#64748b"></span>
+              <h2>硬件与映射</h2>
+              <span class="en">HARDWARE</span>
+              <button class="btn ghost sm hd-right" @click="scanHardware" :class="{ busy: scanning }">扫描硬件</button>
+            </div>
+            <div class="bd">
+              <div class="maps">
+                <div class="map" v-for="f in fanRows" :key="f.key">
+                  <div class="map-name">{{ f.name }}</div>
+                  <div class="inline">
+                    <label>PWM</label>
+                    <input class="num xs" type="number" min="1" max="5" v-model.number="f.pwm" />
+                    <label>温度源</label>
+                    <input class="txt" type="text" v-model="f.sensor" placeholder="芯片:标签" />
+                    <button class="btn ghost sm" @click="saveMapping(f)">应用</button>
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="hw.fans.length || hw.temps.length" class="hwlist">
+                <div class="hwgroup" v-if="hw.fans.length">
+                  <div class="hwtitle">风扇</div>
+                  <div class="hwrow" v-for="f in hw.fans" :key="f.Label">
+                    <span class="hwkey">pwm{{ pwmNum(f.Label) }}</span>
+                    <span class="hwval">{{ f.Label }}</span>
+                    <span class="hwext">{{ f.RPM }} RPM</span>
+                  </div>
+                </div>
+                <div class="hwgroup" v-if="hw.temps.length">
+                  <div class="hwtitle">温度传感器</div>
+                  <div class="hwrow" v-for="t in hw.temps" :key="t.Chip + t.Label">
+                    <span class="hwkey">{{ t.Label }}</span>
+                    <span class="hwval">{{ t.Chip }}</span>
+                    <span class="hwext">{{ t.Temp.toFixed(1) }}°C</span>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="empty">点「扫描硬件」列出本机风扇与温度传感器，换机器时用它确定 PWM 通道与温度源。</div>
+
+              <div class="hint mt">PWM 映射改动需重启 r1-toolbox 服务后生效。</div>
+            </div>
+          </section>
+
+          <section class="card">
           <div class="hd">
-            <span class="sq" style="background:#7c3aed"></span>
-            <h2>灯效</h2>
-            <span class="en">RGB</span>
+          <span class="sq" style="background:#7c3aed"></span>
+          <h2>灯效</h2>
+          <span class="en">RGB</span>
           </div>
           <div class="bd fill">
-            <div class="field">
-              <label>模式</label>
-              <div class="seg wide">
-                <span v-for="m in rgbModes" :key="m.v" :class="{ on: rgbMode === m.v }"
-                      @click="setRGB(m.v)">{{ m.t }}</span>
-              </div>
-            </div>
-            <div class="field mt">
-              <label>颜色</label>
-              <div class="swatches">
-                <span v-for="c in rgbColors" :key="c.v" class="sw"
-                      :class="{ on: rgbColor === c.v }" :style="{ background: c.hex }"
-                      :title="c.t" @click="setRGBColor(c.v)"></span>
-              </div>
-            </div>
-            <div class="hint mt">R1 前屏硬件没有系统级灯效控制通路，这里写入可能无可见效果。</div>
+          <div class="field">
+          <label>模式</label>
+          <div class="seg wide">
+          <span v-for="m in rgbModes" :key="m.v" :class="{ on: rgbMode === m.v }"
+          @click="setRGB(m.v)">{{ m.t }}</span>
           </div>
-        </section>
+          </div>
+          <div class="field mt">
+          <label>颜色</label>
+          <div class="swatches">
+          <span v-for="c in rgbColors" :key="c.v" class="sw"
+          :class="{ on: rgbColor === c.v }" :style="{ background: c.hex }"
+          :title="c.t" @click="setRGBColor(c.v)"></span>
+          </div>
+          </div>
+          <div class="hint mt">R1 前屏硬件没有系统级灯效控制通路，这里写入可能无可见效果。</div>
+          </div>
+          </section>
+
+        </div>
+        <div class="col">
+          <!-- ── 屏幕 ── -->
+          <section class="card">
+            <div class="hd">
+              <span class="sq"></span>
+              <h2>屏幕</h2>
+              <span class="en">DISPLAY</span>
+              <span class="hd-right">{{ screenOff ? '屏幕已关闭' : '屏幕点亮中' }}</span>
+            </div>
+            <div class="bd">
+              <div class="row">
+                <div class="field grow">
+                  <label>屏幕亮度</label>
+                  <div class="slider-wrap">
+                    <input class="range" type="range" min="0" :max="brightMax" step="200"
+                           v-model.number="brightness" @input="onBrightness" />
+                    <span class="val">{{ brightnessPct }}%</span>
+                  </div>
+                </div>
+                <div class="field">
+                  <label>开关屏</label>
+                  <button class="btn" :class="offArmed ? 'danger' : 'ghost'" @click="toggleScreen">
+                    {{ offArmed ? '确认关闭？' : (screenOff ? '点亮屏幕' : '关闭屏幕') }}
+                  </button>
+                </div>
+              </div>
+
+              <div class="row top">
+                <div class="field">
+                  <label>自动关屏</label>
+                  <div class="inline">
+                    <input class="num" type="number" min="0" max="3600" v-model.number="timeout" />
+                    <span class="unit">{{ timeout ? '秒' : '常亮' }}</span>
+                    <button class="btn ghost sm" @click="saveTimeout">应用</button>
+                  </div>
+                  <div class="hint">0 = 常亮，不自动息屏</div>
+                </div>
+                <div class="field">
+                  <label>夜间亮度</label>
+                  <div class="inline">
+                    <span class="ro">{{ nightPct }}%</span>
+                    <span class="unit">18:00–06:00</span>
+                  </div>
+                  <div class="hint">随昼夜切换自动应用，不覆盖手动调节</div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+
+          <!-- ── 显示 ── -->
+          <section class="card">
+            <div class="hd">
+              <span class="sq" style="background:#0891b2"></span>
+              <h2>显示</h2>
+              <span class="en">APPEARANCE</span>
+              <span class="hd-right">改完即生效</span>
+            </div>
+            <div class="bd">
+              <div class="row">
+                <div class="field">
+                  <label>主题</label>
+                  <div class="seg">
+                    <span v-for="t in themes" :key="t.v" :class="{ on: display.theme === t.v }"
+                          @click="setDisplay('theme', t.v)">{{ t.t }}</span>
+                  </div>
+                </div>
+                <div class="field">
+                  <label>时钟</label>
+                  <div class="seg">
+                    <span :class="{ on: display.clock_24h }" @click="setDisplay('clock_24h', true)">24 小时</span>
+                    <span :class="{ on: !display.clock_24h }" @click="setDisplay('clock_24h', false)">12 小时</span>
+                  </div>
+                </div>
+                <div class="field">
+                  <label>天气</label>
+                  <div class="seg">
+                    <span :class="{ on: display.weather }" @click="setDisplay('weather', true)">显示</span>
+                    <span :class="{ on: !display.weather }" @click="setDisplay('weather', false)">隐藏</span>
+                  </div>
+                </div>
+
+                <div class="field">
+                  <label>刷新节奏</label>
+                  <div class="seg">
+                    <span v-for="n in [2, 3, 5]" :key="n" :class="{ on: display.sample_seconds === n }"
+                          @click="setDisplay('sample_seconds', n)">{{ n }} 秒</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="row top">
+                <div class="field grow">
+                  <label>页面与顺序</label>
+                  <div class="prow" v-for="(n, i) in display.page_order" :key="n">
+                    <span class="pname" :class="{ off: !display.pages.includes(n) }">{{ pageLabels[n] }}</span>
+                    <div class="seg">
+                      <span :class="{ on: display.pages.includes(n) }" @click="togglePage(n)">显示</span>
+                      <span :class="{ on: !display.pages.includes(n) }" @click="togglePage(n)">隐藏</span>
+                    </div>
+                    <button class="btn ghost sm" @click="movePage(i, -1)" :disabled="i === 0">↑</button>
+                    <button class="btn ghost sm" @click="movePage(i, 1)" :disabled="i === display.page_order.length - 1">↓</button>
+                  </div>
+                  <div class="hint">翻页只在「显示」的页之间循环，页签也只画启用的；隐藏的页保留在列表里，随时可以再打开。</div>
+                </div>
+              </div>
+
+              <div class="hint mt">主题与时钟立刻生效；刷新节奏改动后，新周期从下一次采样开始算。</div>
+            </div>
+          </section>
+
+          <!-- ── 自检 ── -->
+          <section class="card">
+            <div class="hd">
+              <span class="sq" style="background:#64748b"></span>
+              <h2>自检</h2>
+              <span class="en">SELF MONITOR</span>
+              <span class="hd-right">运行 {{ selfmon.uptime }}</span>
+            </div>
+            <div class="bd">
+              <div class="grid4">
+                <div class="k4">
+                  <div class="k4l">进程 CPU（单核）</div>
+                  <div class="k4v" :class="cpuCls">{{ selfmon.cpu_percent != null ? selfmon.cpu_percent.toFixed(2) : '—' }}%</div>
+                  <div class="k4s">基线 2.1% · 上限 5%</div>
+                </div>
+                <div class="k4">
+                  <div class="k4l">进程内存</div>
+                  <div class="k4v">{{ selfmon.rss_mb != null ? selfmon.rss_mb.toFixed(1) : '—' }} MB</div>
+                  <div class="k4s">goroutine {{ selfmon.goroutines ?? '—' }}</div>
+                </div>
+                <div class="k4">
+                  <div class="k4l">平均帧耗时</div>
+                  <div class="k4v" :class="selfmon.frame_max_ms > 33 ? 'warn' : ''">{{ selfmon.frame_avg_ms != null ? selfmon.frame_avg_ms.toFixed(1) : '—' }} ms</div>
+                  <div class="k4s">最大 {{ selfmon.frame_max_ms != null ? selfmon.frame_max_ms.toFixed(1) : '—' }} ms · 慢帧 {{ selfmon.frame_slow ?? 0 }}</div>
+                </div>
+                <div class="k4">
+                  <div class="k4l">采样</div>
+                  <div class="k4v" :class="selfmon.last_sample_ago > 10 ? 'warn' : ''">
+                    {{ selfmon.last_sample_ago == null || selfmon.last_sample_ago < 0 ? '—' : selfmon.last_sample_ago.toFixed(0) + 's 前' }}</div>
+                  <div class="k4s">{{ selfmon.sample_count ?? 0 }} 次 · 失败 {{ selfmon.sample_errors ?? 0 }}</div>
+                </div>
+              </div>
+              <div class="hint mt">看门狗：{{ selfmon.watchdog_on ? `systemd 托管（${selfmon.watchdog_sec}s 心跳，主循环卡死自动重启）` : '未启用（非 systemd 环境或单元未配 WatchdogSec）' }}</div>
+            </div>
+          </section>
+
+            <section class="card">
+              <div class="hd">
+                <span class="sq" style="background:#d97706"></span>
+                <h2>风扇</h2>
+                <span class="en">FANS</span>
+              </div>
+              <div class="bd">
+                <div class="fan" v-for="f in fanRows" :key="f.key">
+                  <div class="fan-top">
+                    <div class="fan-name">{{ f.name }}<span class="fan-sub">{{ f.sub }}</span></div>
+                    <div class="seg">
+                      <span v-for="m in fanModes" :key="m.v" :class="{ on: f.mode === m.v }"
+                            @click="setFanMode(f.key, m.v)">{{ m.t }}</span>
+                    </div>
+                  </div>
+                  <div class="fan-curve">
+                    <label>启动温度</label>
+                    <input class="num sm" type="number" v-model.number="f.min" />
+                    <span class="unit">°C</span>
+                    <label>全速温度</label>
+                    <input class="num sm" type="number" v-model.number="f.max" />
+                    <span class="unit">°C</span>
+                    <button class="btn ghost sm" @click="saveCurve(f)">应用</button>
+                  </div>
+                </div>
+                <div class="hint mt">曲线只在「自动」模式生效：低于启动温度按最低转速，达到全速温度即满转。</div>
+              </div>
+            </section>
+
+        </div>
       </div>
-
-      <!-- ── 硬件 ── -->
-      <section class="card">
-        <div class="hd">
-          <span class="sq" style="background:#64748b"></span>
-          <h2>硬件与映射</h2>
-          <span class="en">HARDWARE</span>
-          <button class="btn ghost sm hd-right" @click="scanHardware" :class="{ busy: scanning }">扫描硬件</button>
-        </div>
-        <div class="bd">
-          <div class="maps">
-            <div class="map" v-for="f in fanRows" :key="f.key">
-              <div class="map-name">{{ f.name }}</div>
-              <div class="inline">
-                <label>PWM</label>
-                <input class="num xs" type="number" min="1" max="5" v-model.number="f.pwm" />
-                <label>温度源</label>
-                <input class="txt" type="text" v-model="f.sensor" placeholder="芯片:标签" />
-                <button class="btn ghost sm" @click="saveMapping(f)">应用</button>
-              </div>
-            </div>
-          </div>
-
-          <div v-if="hw.fans.length || hw.temps.length" class="hwlist">
-            <div class="hwgroup" v-if="hw.fans.length">
-              <div class="hwtitle">风扇</div>
-              <div class="hwrow" v-for="f in hw.fans" :key="f.Label">
-                <span class="hwkey">pwm{{ pwmNum(f.Label) }}</span>
-                <span class="hwval">{{ f.Label }}</span>
-                <span class="hwext">{{ f.RPM }} RPM</span>
-              </div>
-            </div>
-            <div class="hwgroup" v-if="hw.temps.length">
-              <div class="hwtitle">温度传感器</div>
-              <div class="hwrow" v-for="t in hw.temps" :key="t.Chip + t.Label">
-                <span class="hwkey">{{ t.Label }}</span>
-                <span class="hwval">{{ t.Chip }}</span>
-                <span class="hwext">{{ t.Temp.toFixed(1) }}°C</span>
-              </div>
-            </div>
-          </div>
-          <div v-else class="empty">点「扫描硬件」列出本机风扇与温度传感器，换机器时用它确定 PWM 通道与温度源。</div>
-
-          <div class="hint mt">PWM 映射改动需重启 r1-toolbox 服务后生效。</div>
-        </div>
-      </section>
 
       <div class="foot">
         面板令牌决定这台设备的控制权 · 令牌在 <code>/etc/r1-toolbox/config.yaml</code> 的 <code>web.token</code>
@@ -508,6 +515,7 @@ const pageLabels = { env: '环境', detail: '详情', system: '系统' }
 
 /* ── 告警 ── */
 const alerts = reactive({ active: [], events: [], bark_set: false, debounce: 3, silence_min: 30 })
+const eventsOpen = ref(false) // 记录默认只显示最近 5 条（测试与真实告警会攒很多条）
 const alertForm = reactive({ temp_warn: 70, temp_crit: 80, disk_warn: 90, bark_url: '' })
 const loadAlerts = () => api('/api/alerts').then((d) => {
   alerts.active = d.active || []
@@ -917,10 +925,13 @@ code {
 .card .bd.fill { display: flex; flex-direction: column; }
 .card .bd.fill .hint { margin-top: auto; }
 
-.grid2 { display: grid; grid-template-columns: 1fr 360px; gap: 18px; align-items: stretch; }
-.grid2 .card { display: flex; flex-direction: column; }
-.grid2 .card .bd { flex: 1 1 auto; }
-.grid2 .card { margin-bottom: 18px; }
+/* ── 两列主网格 ──
+   2026-11-02 洋哥：单列堆叠时每张卡都 1180px 宽、内容只有 400~600，
+   右侧大片空白。改成两列：左列放内容型（预览/告警/硬件），
+   右列放控件型（屏幕/显示/自检/风扇/灯效），每列 ~560px。 */
+.cols { display: grid; grid-template-columns: 1.14fr 1fr; gap: 18px; align-items: start; }
+.col { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.col .card { margin-bottom: 0; }
 
 /* ── 表单 ── */
 .row { display: flex; gap: 26px; align-items: flex-end; flex-wrap: wrap; }
@@ -1021,6 +1032,11 @@ code {
   font-size: 11.5px; color: var(--ink2); letter-spacing: .06em;
   display: block; margin-bottom: 6px;
 }
+.lnk {
+  cursor: pointer; color: var(--accent); margin-left: 8px;
+  font-size: 11.5px; letter-spacing: 0;
+}
+.lnk:hover { text-decoration: underline; }
 .alist { display: flex; flex-direction: column; }
 .arow { display: flex; gap: 10px; align-items: center; padding: 5px 0; }
 .atxt { font-size: 13px; }
@@ -1035,7 +1051,7 @@ code {
 
 /* ── 自检 ── */
 .grid4 {
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px;
 }
 .k4l { font-size: 11.5px; color: var(--ink3); margin-bottom: 5px; }
 .k4v { font-size: 22px; font-weight: 660; font-variant-numeric: tabular-nums; }
@@ -1101,7 +1117,7 @@ code {
 
 @media (max-width: 960px) {
   .kpis { grid-template-columns: repeat(2, 1fr); }
-  .grid2 { grid-template-columns: 1fr; }
+  .cols { grid-template-columns: 1fr; }
   .hwlist { grid-template-columns: 1fr; }
   .appbar .inner, .wrap { padding-left: 16px; padding-right: 16px; }
   .brand .sub { display: none; }
