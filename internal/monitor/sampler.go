@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"r1-toolbox/internal/logx"
+	"r1-toolbox/internal/selfmon"
 )
 
 // Sampler 把采样从渲染线程里挪出来。
@@ -74,15 +75,21 @@ func (s *Sampler) fastLoop() {
 }
 
 func (s *Sampler) sampleFast() {
+	errs := 0
 	if err := s.mon.UpdateCPU(); err != nil {
 		logx.Debugf("[采样] CPU: %v", err)
+		errs++
 	}
 	if err := s.mon.UpdateMemory(); err != nil {
 		logx.Debugf("[采样] 内存: %v", err)
+		errs++
 	}
 	if err := s.mon.UpdateNetwork(); err != nil {
 		logx.Debugf("[采样] 网络: %v", err)
+		errs++
 	}
+	// P3 自检：采样活性与失败计数（面板"自检"卡回答"采样还活着吗"）
+	selfmon.M.MarkSample(errs)
 	s.ver.Add(1)
 }
 

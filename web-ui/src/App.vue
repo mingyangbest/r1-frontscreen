@@ -295,6 +295,42 @@
         </div>
       </section>
 
+      <!-- ── 自检 ── -->
+      <section class="card">
+        <div class="hd">
+          <span class="sq" style="background:#64748b"></span>
+          <h2>自检</h2>
+          <span class="en">SELF MONITOR</span>
+          <span class="hd-right">运行 {{ selfmon.uptime }}</span>
+        </div>
+        <div class="bd">
+          <div class="grid4">
+            <div class="k4">
+              <div class="k4l">进程 CPU（单核）</div>
+              <div class="k4v" :class="cpuCls">{{ selfmon.cpu_percent != null ? selfmon.cpu_percent.toFixed(2) : '—' }}%</div>
+              <div class="k4s">基线 2.1% · 上限 5%</div>
+            </div>
+            <div class="k4">
+              <div class="k4l">进程内存</div>
+              <div class="k4v">{{ selfmon.rss_mb != null ? selfmon.rss_mb.toFixed(1) : '—' }} MB</div>
+              <div class="k4s">goroutine {{ selfmon.goroutines ?? '—' }}</div>
+            </div>
+            <div class="k4">
+              <div class="k4l">平均帧耗时</div>
+              <div class="k4v" :class="selfmon.frame_max_ms > 33 ? 'warn' : ''">{{ selfmon.frame_avg_ms != null ? selfmon.frame_avg_ms.toFixed(1) : '—' }} ms</div>
+              <div class="k4s">最大 {{ selfmon.frame_max_ms != null ? selfmon.frame_max_ms.toFixed(1) : '—' }} ms · 慢帧 {{ selfmon.frame_slow ?? 0 }}</div>
+            </div>
+            <div class="k4">
+              <div class="k4l">采样</div>
+              <div class="k4v" :class="selfmon.last_sample_ago > 10 ? 'warn' : ''">
+                {{ selfmon.last_sample_ago == null || selfmon.last_sample_ago < 0 ? '—' : selfmon.last_sample_ago.toFixed(0) + 's 前' }}</div>
+              <div class="k4s">{{ selfmon.sample_count ?? 0 }} 次 · 失败 {{ selfmon.sample_errors ?? 0 }}</div>
+            </div>
+          </div>
+          <div class="hint mt">看门狗：{{ selfmon.watchdog_on ? `systemd 托管（${selfmon.watchdog_sec}s 心跳，主循环卡死自动重启）` : '未启用（非 systemd 环境或单元未配 WatchdogSec）' }}</div>
+        </div>
+      </section>
+
       <!-- ── 风扇 + 灯效 ── -->
       <div class="grid2">
         <section class="card">
@@ -504,6 +540,14 @@ const testBark = () => api('/api/alerts/test', {})
   .catch(() => tip('发送失败 —— 检查地址与网络'))
 const fmtTime = (t) => new Date(t).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 
+/* ── 自检 ── */
+const selfmon = reactive({})
+const cpuCls = computed(() => {
+  const v = selfmon.cpu_percent || 0
+  return v <= 2.5 ? 'ok' : v <= 5 ? 'warn' : 'bad'
+})
+const loadSelfmon = () => api('/api/selfmon').then((d) => Object.assign(selfmon, d)).catch(() => {})
+
 /* ── 实时预览 ── */
 const previewPage = ref('')
 const previewSrc = ref('')
@@ -623,7 +667,7 @@ const loadStatus = () =>
 
 const refreshAll = () => {
   loading.value = true
-  Promise.all([loadConfig(), loadDisplay(), loadAlerts(), loadStatus()])
+  Promise.all([loadConfig(), loadDisplay(), loadAlerts(), loadSelfmon(), loadStatus()])
     .catch(() => tip('刷新失败，检查网络'))
     .finally(() => { loading.value = false })
 }
@@ -721,6 +765,7 @@ let pollTimer = null
 onMounted(() => {
   refreshAll()
   pollTimer = setInterval(loadStatus, 2000)
+  setInterval(loadSelfmon, 5000)
   watchAutoPreview()
 })
 onUnmounted(() => { clearInterval(pollTimer); clearInterval(previewTimer) })
@@ -987,6 +1032,17 @@ code {
 .asev.warn { background: #fdf6e7; color: #92600b; }
 .asev.rec  { background: var(--accent-l); color: var(--accent-deep); }
 .asev.mini { padding: 1px 7px; }
+
+/* ── 自检 ── */
+.grid4 {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
+}
+.k4l { font-size: 11.5px; color: var(--ink3); margin-bottom: 5px; }
+.k4v { font-size: 22px; font-weight: 660; font-variant-numeric: tabular-nums; }
+.k4v.ok { color: var(--accent-deep); }
+.k4v.warn { color: #d97706; }
+.k4v.bad { color: #dc2626; }
+.k4s { font-size: 11.5px; color: var(--ink3); margin-top: 4px; }
 
 /* ── 页面与顺序 ── */
 .prow { display: flex; align-items: center; gap: 12px; padding: 5px 0; }

@@ -15,6 +15,7 @@ import (
 	"r1-toolbox/internal/logx"
 	"r1-toolbox/internal/monitor"
 	"r1-toolbox/internal/screen"
+	"r1-toolbox/internal/selfmon"
 )
 
 type Server struct {
@@ -106,6 +107,7 @@ func (s *Server) setupRoutes() {
 	router.GET("/api/display", s.handleDisplayGet)
 	router.GET("/api/preview", s.handlePreview)
 	router.GET("/api/alerts", s.handleAlertsGet)
+	router.GET("/api/selfmon", s.handleSelfmon)
 	router.POST("/api/alerts/config", s.handleAlertsConfig)
 	router.POST("/api/alerts/test", s.handleAlertsTest)
 	router.POST("/api/display", s.handleDisplaySet)
@@ -340,6 +342,12 @@ func (s *Server) handleDisplaySet(c *gin.Context) {
 		s.OnDisplay(req)
 	}
 	c.JSON(200, gin.H{"success": true, "display": req})
+}
+
+// handleSelfmon 自身可观测性（P3）：进程 CPU/内存、帧统计、采样活性、
+// 看门狗。纯进程内自省，无子进程调用 —— 这个接口本身必须很便宜。
+func (s *Server) handleSelfmon(c *gin.Context) {
+	c.JSON(200, selfmon.M.Snapshot())
 }
 
 // handlePreview 返回指定页的实时预览 PNG。

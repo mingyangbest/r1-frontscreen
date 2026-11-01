@@ -14,6 +14,8 @@ import (
 	"github.com/veandco/go-sdl2/sdl"
 	"github.com/veandco/go-sdl2/ttf"
 
+	"r1-toolbox/internal/selfmon"
+
 	"r1-toolbox/internal/alerts"
 	"r1-toolbox/internal/config"
 	"r1-toolbox/internal/hardware"
@@ -628,6 +630,10 @@ func (r *Renderer) Render(d *DrawCtx) {
 
 	c := r.Canvas
 	tDraw := time.Now()
+	// P3 自检：每帧耗时进 selfmon（含息屏早退的便宜帧 —— 它也是循环健康状况的一部分）。
+	// 必须包闭包：defer 语句的参数在声明时立即求值，直接写 time.Since(tDraw)
+	// 量到的是 0（2026-11-01 实测 frame_avg=0.0003ms 抓出来的）。
+	defer func() { selfmon.M.RecordFrame(time.Since(tDraw)) }()
 
 	if r.screenOff.Load() {
 		c.Reset()
