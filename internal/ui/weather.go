@@ -121,21 +121,23 @@ func weatherAccent(kind string) RGBA {
 
 // DrawWeatherIcon 在 (cx,cy) 处以半径 r 绘制天气图形。
 // kind: sun / cloud / overcast / rain / snow / fog / thunder
-// 夜间（18:00~06:00 本地时间）sun→moon、cloud→cloudNight（2026-10-28 洋哥拍板）；
-// 雨/雪/雾/阴/雷不区分昼夜（云雨本无昼夜观感差异）。
+// 夜间（18:00~06:00 本地时间）只把**太阳类**图标换成月牙：sun→moon、
+// cloud→cloudNight（2026-10-28 洋哥拍板「深夜晴天挂大太阳违和」）。
+// 雨/雪/雾/阴/雷保持原样 —— 2026-11-01 洋哥指出雨夜「月亮 + 小雨」
+// 语义对不上：天气 API 已经明确说了小雨，图标必须与文字讲同一件事；
+// 当初「夜里看不清云雨」的论证只对太阳类成立（夜里确实没有太阳可画）。
 // t 为时间（秒），驱动全部动画。
 func DrawWeatherIcon(c *Canvas, cx, cy int, r float64, kind string, t float64) {
 	fx, fy := float64(cx), float64(cy)
-	// 夜间统一画弯月（规范第七节「右上月牙」）。WxOverride 是预览工具的
-	// 验收入口 —— 强制指定类型时连夜间强制一起跳过，否则白天图标夜里没法验收。
+	// WxOverride 是预览工具的验收入口 —— 强制指定类型时连夜间切换一起
+	// 跳过，否则白天图标夜里没法验收。
 	if isNight() && WxOverride == "" {
-		// 夜间统一画弯月（规范第七节「右上月牙」）。
-		//
-		// 参考图那一格在「雾」的天气下画的依然是月牙 —— 说明这一格表达的是
-		// "现在是夜里"，不是"现在什么天气"；天气类型由日期行文字承担
-		// （「雾 16°」），信息并没有丢。夜里本来也看不清云雨，硬画一个
-		// 雾/雨图标，等于把"看不清的读数"当结论报出来。
-		kind = "moon"
+		switch kind {
+		case "sun":
+			kind = "moon"
+		case "cloud":
+			kind = "cloudNight"
+		}
 	}
 	switch kind {
 	case "sun":

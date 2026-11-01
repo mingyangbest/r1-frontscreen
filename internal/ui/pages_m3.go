@@ -880,8 +880,10 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 			DrawPartsTop(c, fs, DPadX+DPad, syCtrlY+148, FzCard, []TPart{
 				{S: d.WebToken, Col: colMint, Latin: true, Bold: true},
 			})
+			// 注意不能标 Latin:true —— IBM Plex 没有 CJK 字形，
+			// 中文段标了 Latin 就渲染成方块（2026-11-02 洋哥实测乱码）。
 			DrawPartsTopR(c, fs, DPadX+DCardW-DPad, syCtrlY+150, FzMeta,
-				[]TPart{{S: "10 秒后隐藏", Col: colTab, Latin: true}})
+				[]TPart{{S: "10 秒后隐藏", Col: colTab}})
 		} else {
 			DrawPartsTop(c, fs, DPadX+DPad, syCtrlY+148, FzMeta,
 				[]TPart{{S: "面板令牌", Col: colSub}})
@@ -891,7 +893,7 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 			}
 			DTokBars(c, DPadX+108, syCtrlY+162, lit, colMint)
 			DrawPartsTopR(c, fs, DPadX+DCardW-DPad, syCtrlY+150, FzMeta,
-				[]TPart{{S: "点按显示", Col: colTab, Latin: true}})
+				[]TPart{{S: "点按显示", Col: colTab}})
 		}
 	}
 
