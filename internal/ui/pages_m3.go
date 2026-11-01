@@ -800,42 +800,48 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 			[]TPart{{S: fitText(fs, pub, FzCard, 200), Col: pubCol, Latin: true}})
 	}
 
-	// ---------------- 容器 ----------------
-	// 2026-11-01 洋哥：原「上传·下载」卡与首页网络卡讲的是同一件事，删掉；
-	// 今日收发已并入首页网络卡。这里换成容器列表 —— NAS 屏上「服务还在跑吗」
-	// 是高频问题，环境页只给了一个数字药丸，这里给名字。
+	// ---------------- Docker ----------------
+	// 2026-11-01 洋哥：参考 Docker Desktop 的「健康」卡 —— 一行结论 + 三行
+	// 计数（项目 / 镜像 / 容器），每个维度都按「总数 = 运行 + 停止」给全，
+	// 不做含糊的减法。原「上传·下载」卡与首页网络卡重复，已删除。
 	if c.ClipVisible(DPadX, syCtrY, DCardW, syCtrH) {
 		DCardBox(c, d, DPadX, syCtrY, DCardW, syCtrH, colRose)
-		DCardTitle(c, fs, DPadX, syCtrY+13, "容器", colRose)
+		DCardTitle(c, fs, DPadX, syCtrY+13, "Docker", colRose)
 
-		names := m.Containers
-		if m.ContainersRunning < 0 {
-			DMetaR(c, fs, DPadX+DCardW, syCtrY+16, "未接入 Docker", colDim)
-			DrawPartsTop(c, fs, DPadX+DPad, syCtrY+56, FzCard,
+		dk := m.Docker
+		if dk == nil {
+			DMetaR(c, fs, DPadX+DCardW, syCtrY+16, "未接入", colDim)
+			DrawPartsTop(c, fs, DPadX+DPad, syCtrY+48, FzCard,
 				[]TPart{{S: "读不到 /var/run/docker.sock", Col: colDim}})
 		} else {
-			DMetaR(c, fs, DPadX+DCardW, syCtrY+16,
-				fmt.Sprintf("%d 运行 / %d 总计", m.ContainersRunning, m.ContainersTotal),
-				colDim)
-			if len(names) == 0 {
-				DrawPartsTop(c, fs, DPadX+DPad, syCtrY+56, FzCard,
-					[]TPart{{S: "没有运行中的容器", Col: colDim}})
+			// 右上给结论（健康 / N 个已退出），副标题给一句人话 —— 两者
+			// 粒度不同但说的是同一件事，不重复也不打架。
+			head, headCol, sub := "健康", colMint, "所有服务运行状态健康"
+			if !dk.Healthy() {
+				head = fmt.Sprintf("%d 个已退出", dk.ContainersExited)
+				headCol = colSand
+				sub = fmt.Sprintf("%d 个容器已退出，其余服务运行正常", dk.ContainersExited)
 			}
-			// 每行 30：52 / 82 / 112 / 142 / 172，第五行墨迹底 185，卡底 200。
-			// 超过 5 个只报剩余数量 —— 一屏列 20 个容器没人读。
-			const maxRows = 5
-			for i, n := range names {
-				if i >= maxRows {
-					break
-				}
-				yInk := syCtrY + 52 + i*30
-				c.FillCircle(float64(DPadX+DPad+4), float64(yInk+6), 3.5, colMint)
-				DrawPartsTop(c, fs, DPadX+DPad+16, yInk, FzCard,
-					[]TPart{{S: fitText(fs, n, FzCard, DCardW-2*DPad-16), Col: colSub, Latin: true}})
+			DMetaR(c, fs, DPadX+DCardW, syCtrY+16, head, headCol)
+			DrawPartsTop(c, fs, DPadX+DPad, syCtrY+42, FzMeta,
+				[]TPart{{S: sub, Col: colDim}})
+
+			rows := []string{
+				fmt.Sprintf("项目  %d 个 · 运行 %d · 停止 %d",
+					dk.ProjectsTotal, dk.ProjectsRunning, dk.ProjectsStopped),
+				fmt.Sprintf("镜像  %d 个 · 用中 %d · 闲置 %d",
+					dk.ImagesTotal, dk.ImagesUsed, dk.ImagesUnused),
+				fmt.Sprintf("容器  %d 个 · 运行 %d · 退出 %d",
+					dk.ContainersTotal, dk.ContainersRunning, dk.ContainersExited),
 			}
-			if len(names) > maxRows {
-				DrawPartsTop(c, fs, DPadX+DPad+16, syCtrY+52+maxRows*30-6, FzMeta,
-					[]TPart{{S: fmt.Sprintf("… 还有 %d 个", len(names)-maxRows), Col: colDim}})
+			// 三行 78 / 112 / 146，行距 34；最后一行墨迹底 162，卡底 200。
+			// 行首一根 3×11 的短竖条，用卡色提亮 —— 参考图那里是图标，
+			// 我们只有 328px 宽，图标会把正文挤掉一截，留一根色条足够分组。
+			for i, s := range rows {
+				y := syCtrY + 78 + i*34
+				c.FillRoundRect(DPadX+DPad, y+2, 3, 11, 1, colRose)
+				DrawPartsTop(c, fs, DPadX+DPad+12, y, FzMeta,
+					[]TPart{{S: s, Col: colSub}})
 			}
 		}
 	}
