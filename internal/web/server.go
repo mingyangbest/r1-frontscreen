@@ -3,6 +3,7 @@ package web
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"r1-toolbox/internal/alerts"
 	"r1-toolbox/internal/config"
 	"r1-toolbox/internal/hardware"
+	"r1-toolbox/internal/history"
 	"r1-toolbox/internal/logx"
 	"r1-toolbox/internal/monitor"
 	"r1-toolbox/internal/screen"
@@ -36,6 +38,9 @@ type Server struct {
 	Alerts *alerts.Engine
 	// Bark 推送器（测试按钮用；正式推送走引擎内部）
 	Bark *alerts.Bark
+
+	// History 24 小时指标历史（nil = 未启用，接口返回 501）
+	History *history.Store
 
 	// Preview 实时预览：按页名离屏重绘一帧 PNG（主程序注入渲染器闭包）。
 	// 为 nil 时 /api/preview 返回 501 —— 预览依赖屏幕在跑，纯 headless
@@ -108,6 +113,7 @@ func (s *Server) setupRoutes() {
 	router.GET("/api/preview", s.handlePreview)
 	router.GET("/api/alerts", s.handleAlertsGet)
 	router.GET("/api/selfmon", s.handleSelfmon)
+	router.GET("/api/history", s.handleHistory)
 	router.POST("/api/alerts/config", s.handleAlertsConfig)
 	router.POST("/api/alerts/test", s.handleAlertsTest)
 	router.POST("/api/display", s.handleDisplaySet)
@@ -342,6 +348,27 @@ func (s *Server) handleDisplaySet(c *gin.Context) {
 		s.OnDisplay(req)
 	}
 	c.JSON(200, gin.H{"success": true, "display": req})
+}
+
+// handleHistory 24 小时指标历史（P4）。降采样到 ~240 点：
+// 面板一个折线图看不出 1440 个点的差别，少传点也快。
+func (s *Server) handleHistory(c *gin.Context) {
+	if s.History == nil {
+		c.JSON(501, gin.H{"error": "历史未启用"})
+		return
+	}
+	hours := 24
+	if v := c.Query("hours"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 24 {
+			hours = n
+		}
+	}
+	pts, err := s.History.Query(hours, 240)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"hours": hours, "points": pts})
 }
 
 // handleSelfmon 自身可观测性（P3）：进程 CPU/内存、帧统计、采样活性、

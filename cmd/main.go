@@ -15,6 +15,7 @@ import (
 	"r1-toolbox/internal/alerts"
 	"r1-toolbox/internal/config"
 	"r1-toolbox/internal/hardware"
+	"r1-toolbox/internal/history"
 	"r1-toolbox/internal/logx"
 	"r1-toolbox/internal/monitor"
 	"r1-toolbox/internal/netinfo"
@@ -281,6 +282,37 @@ func main() {
 		}
 	})
 
+	// ---------------- 24 小时历史（P4）----------------
+	//
+	// 每 2 秒喂一个瞬时样本，Store 内部按自然分钟聚合、满一分钟才落库。
+	// 独立协程而不是塞进采样器：历史只是观测，写库慢（磁盘 IO）绝不能
+	// 拖住采样 —— smartctl 卡 359ms 拖死触摸的教训还在 sampler.go 注释里。
+	var hist *history.Store
+	if h, herr := history.Open(history.Path); herr != nil {
+		logx.Printf("【历史】未启用: %v", herr)
+	} else {
+		hist = h
+		go func() {
+			t := time.NewTicker(2 * time.Second)
+			defer t.Stop()
+			for range t.C {
+				snap := mon.Snapshot()
+				maxPct := 0.0
+				for _, v := range mon.Disk.GetVolumes() {
+					if v.UsedPercent > maxPct {
+						maxPct = v.UsedPercent
+					}
+				}
+				hist.Add(history.Sample{
+					CPU: snap.CPUPercent, Mem: snap.MemPercent,
+					Temp: snap.CPUTemp, Disk: maxPct,
+					NetRx: snap.NetRecvMBps, NetTx: snap.NetSendMBps,
+				})
+			}
+		}()
+		logx.Printf("【历史】已启用（%s，保留 %d 小时）", history.Path, int(history.Retain.Hours()))
+	}
+
 	// ---------------- Web 面板 ----------------
 	if cfg.Web.Enabled && cfg.Web.Token != "" {
 		webServer := web.NewServer(mon, fanCtrl, rgbCtrl, brightness, store, screenCtl)
@@ -290,6 +322,7 @@ func main() {
 		}
 		webServer.Alerts = alertEng
 		webServer.Bark = bark
+		webServer.History = hist
 		// 面板改了显示设置 → 立刻反映到屏幕上（不必重启服务）
 		webServer.OnDisplay = func(dc config.DisplayConfig) {
 			pages := dc.EnabledPages()

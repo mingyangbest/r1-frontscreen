@@ -4,6 +4,7 @@ go 1.19
 
 require (
 	github.com/gin-gonic/gin v1.9.1
+	github.com/mattn/go-sqlite3 v1.14.24
 	github.com/shirou/gopsutil/v3 v3.24.1
 	github.com/veandco/go-sdl2 v0.4.38
 	gopkg.in/yaml.v3 v3.0.1

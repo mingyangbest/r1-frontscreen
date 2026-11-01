@@ -190,6 +190,48 @@
             </div>
           </section>
 
+          <!-- ── 历史 ── -->
+          <section class="card">
+            <div class="hd">
+              <span class="sq" style="background:#0ea5e9"></span>
+              <h2>历史</h2>
+              <span class="en">24 HOURS</span>
+              <span class="hd-right">每分钟一行 · 均值与峰值</span>
+            </div>
+            <div class="bd">
+              <div class="hseg">
+                <span v-for="m in histMetrics" :key="m.v" :class="{ on: history.metric === m.v }"
+                      @click="history.metric = m.v">{{ m.t }}</span>
+              </div>
+
+              <div v-if="histView" class="hchart">
+                <svg :viewBox="`0 0 ${histView.W} ${histView.H}`" preserveAspectRatio="none">
+                  <line v-for="(g, i) in histView.grid" :key="'g' + i"
+                        :x1="0" :x2="histView.W" :y1="g.y" :y2="g.y" class="hgrid"
+                        vector-effect="non-scaling-stroke" />
+                  <path v-if="histView.band" :d="histView.band" :fill="histView.color" opacity="0.16" />
+                  <path :d="histView.line" fill="none" :stroke="histView.color" stroke-width="1.8"
+                        stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />
+                  <path v-if="histView.line2" :d="histView.line2" fill="none" stroke="#64748b" stroke-width="1.4"
+                        stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />
+                </svg>
+                <div class="haxis">
+                  <span>{{ histView.axis[0] }}</span><span>{{ histView.axis[1] }}</span><span>{{ histView.axis[2] }}</span>
+                </div>
+              </div>
+              <div v-else class="empty">历史正在积累（每分钟一行），稍后回来就有曲线了。</div>
+
+              <div v-if="histView" class="hstat">
+                <span class="hcur" :style="{ color: histView.color }">{{ histView.now }}</span>
+                <span class="hsub">{{ histView.nowLabel }}</span>
+                <span class="hsub">·</span>
+                <span class="hsub">24h 峰值 {{ histView.peak }}</span>
+                <span v-if="history.points.length < 60" class="hsub">· 已积累 {{ history.points.length }} 分钟</span>
+                <span v-if="history.metric === 'net'" class="hsub">· 深色线为发送</span>
+              </div>
+            </div>
+          </section>
+
           <!-- ── 硬件 ── -->
           <section class="card">
             <div class="hd">
@@ -548,6 +590,68 @@ const testBark = () => api('/api/alerts/test', {})
   .catch(() => tip('发送失败 —— 检查地址与网络'))
 const fmtTime = (t) => new Date(t).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 
+/* ── 历史（24h） ── */
+const histMetrics = [
+  { v: 'cpu', t: 'CPU' }, { v: 'mem', t: '内存' }, { v: 'temp', t: '温度' },
+  { v: 'disk', t: '磁盘' }, { v: 'net', t: '网络' },
+]
+const history = reactive({ points: [], metric: 'cpu' })
+const loadHistory = () => api('/api/history?hours=24')
+  .then((d) => { history.points = d.points || [] })
+  .catch(() => {})
+
+// histView 折线几何：均值线 + 峰值带（均值到峰值之间的半透明区域）。
+// 降采样已在后端做（≤240 点），这里只管画。
+const histView = computed(() => {
+  const pts = history.points
+  if (!pts || pts.length < 2) return null
+  const m = history.metric
+  const conf = {
+    cpu: { mean: 'cpu', max: 'cpu_max', cap: 100, unit: '%', color: '#0d9488' },
+    mem: { mean: 'mem', max: 'mem_max', cap: 100, unit: '%', color: '#2563eb' },
+    temp: { mean: 'temp', max: 'temp_max', cap: 0, unit: '°C', color: '#d97706' },
+    disk: { mean: 'disk', max: 'disk_max', cap: 100, unit: '%', color: '#7c3aed' },
+    net: { mean: 'net_rx', max: 'net_rx_max', cap: 0, unit: 'MB/s', color: '#0ea5e9' },
+  }[m]
+  const W = 520, H = 130
+  let ymax = conf.cap
+  if (!ymax) {
+    const mx = Math.max(1, ...pts.map((p) => p[conf.max] || 0))
+    ymax = m === 'temp' ? Math.max(50, Math.ceil(mx / 10) * 10)
+                        : Math.max(0.5, Math.round(mx * 10) / 10)
+  }
+  // X 轴按**真实时间戳**映射在 24h 窗口上。不能按点索引均匀铺开：
+  // 只有 5 分钟数据时会画满整个宽度，而坐标轴写着「24 小时前」——那是在骗人。
+  //
+  // 数据不足 24 小时时**自适应窗口**：窗口收到实际数据跨度（至少 10 分钟），
+  // 坐标轴标签跟着变（"8 分钟前" / "4 分钟前" / "现在"）。否则刚装好的机器
+  // 会看到一张几乎全空的图，以为图坏了。攒满一天后自然过渡回 24h。
+  const now = Math.floor(Date.now() / 1000)
+  const span = Math.min(24 * 3600, Math.max(now - pts[0].ts, 600))
+  const t0 = now - span
+  const X = (ts) => Math.min(W, Math.max(0, ((ts - t0) / span) * W))
+  const Y = (v) => H - (Math.min(Math.max(v || 0, 0), ymax) / ymax) * H
+  const path = (key) => pts.map((p, i) => `${i ? 'L' : 'M'}${X(p.ts).toFixed(1)},${Y(p[key]).toFixed(1)}`).join('')
+  const band = path(conf.max) +
+    pts.slice().reverse().map((p) => `L${X(p.ts).toFixed(1)},${Y(p[conf.mean]).toFixed(1)}`).join('') + 'Z'
+  const ago = (sec) => (sec >= 7200 ? `${Math.round(sec / 3600)} 小时前`
+                                    : `${Math.max(1, Math.round(sec / 60))} 分钟前`)
+  const last = pts[pts.length - 1]
+  const peak = Math.max(...pts.map((p) => p[conf.max] || 0))
+  const fmt = (v) => (m === 'net' ? v.toFixed(2) : v.toFixed(m === 'temp' ? 0 : 1))
+  return {
+    W, H, color: conf.color,
+    line: path(conf.mean),
+    line2: m === 'net' ? path('net_tx') : '',
+    band,
+    grid: [1, 2, 3].map((i) => ({ y: ((H * i) / 4).toFixed(1) })),
+    axis: [ago(span), ago(span / 2), '现在'],
+    now: fmt(last[conf.mean]) + ' ' + conf.unit,
+    nowLabel: m === 'net' ? '接收' : '',
+    peak: fmt(peak) + ' ' + conf.unit,
+  }
+})
+
 /* ── 自检 ── */
 const selfmon = reactive({})
 const cpuCls = computed(() => {
@@ -675,7 +779,7 @@ const loadStatus = () =>
 
 const refreshAll = () => {
   loading.value = true
-  Promise.all([loadConfig(), loadDisplay(), loadAlerts(), loadSelfmon(), loadStatus()])
+  Promise.all([loadConfig(), loadDisplay(), loadAlerts(), loadSelfmon(), loadHistory(), loadStatus()])
     .catch(() => tip('刷新失败，检查网络'))
     .finally(() => { loading.value = false })
 }
@@ -774,6 +878,7 @@ onMounted(() => {
   refreshAll()
   pollTimer = setInterval(loadStatus, 2000)
   setInterval(loadSelfmon, 5000)
+  setInterval(loadHistory, 60000)
   watchAutoPreview()
 })
 onUnmounted(() => { clearInterval(pollTimer); clearInterval(previewTimer) })
@@ -1048,6 +1153,30 @@ code {
 .asev.warn { background: #fdf6e7; color: #92600b; }
 .asev.rec  { background: var(--accent-l); color: var(--accent-deep); }
 .asev.mini { padding: 1px 7px; }
+
+/* ── 历史 ── */
+.hseg {
+  display: inline-flex; gap: 2px; padding: 3px;
+  background: var(--line2); border-radius: 9px; margin-bottom: 14px;
+}
+.hseg span {
+  font-size: 12.5px; padding: 5px 13px; border-radius: 7px;
+  color: var(--ink2); cursor: pointer; white-space: nowrap;
+}
+.hseg span.on {
+  background: var(--card); color: var(--ink); font-weight: 560;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .08);
+}
+.hchart svg { width: 100%; height: 130px; display: block; }
+.hgrid { stroke: var(--line); stroke-width: 1; }
+.haxis {
+  display: flex; justify-content: space-between;
+  font-size: 10.5px; color: var(--ink3); margin-top: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.hstat { margin-top: 10px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.hcur { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.hsub { font-size: 11.5px; color: var(--ink3); }
 
 /* ── 自检 ── */
 .grid4 {
