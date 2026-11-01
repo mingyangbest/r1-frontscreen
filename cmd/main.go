@@ -1,6 +1,9 @@
 package main
 
 import (
+	"net/http"
+	"sync"
+
 	"crypto/rand"
 	"fmt"
 	"os"
@@ -9,6 +12,7 @@ import (
 
 	"github.com/veandco/go-sdl2/sdl"
 
+	"r1-toolbox/internal/alerts"
 	"r1-toolbox/internal/config"
 	"r1-toolbox/internal/hardware"
 	"r1-toolbox/internal/logx"
@@ -38,6 +42,38 @@ func clockModeText(h24 bool) string {
 		return "24 小时制"
 	}
 	return "12 小时制"
+}
+
+// netProbe 公网连通性的轻量探测：连续失败交给告警引擎做防抖，
+// 这里只负责"此刻通不通"。30s 缓存 —— 10s 一轮的告警检查不该
+// 每轮都真发请求（那是对上游端点的小型 DDoS）。
+type netProbeState struct {
+	mu     sync.Mutex
+	ok     bool
+	at     time.Time
+	client *http.Client
+}
+
+func newNetProbe() *netProbeState {
+	return &netProbeState{ok: true, client: &http.Client{Timeout: 4 * time.Second}}
+}
+
+func (p *netProbeState) reachable() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if time.Since(p.at) < 30*time.Second {
+		return p.ok
+	}
+	resp, err := p.client.Get("https://connect.rom.miui.com/generate_204")
+	ok := err == nil && resp != nil && resp.StatusCode == 204
+	if resp != nil {
+		resp.Body.Close()
+	}
+	if !ok {
+		logx.Printf("【网络】探测失败 err=%v", err)
+	}
+	p.ok, p.at = ok, time.Now()
+	return p.ok
 }
 
 func genWebToken() (string, error) {
@@ -200,6 +236,51 @@ func main() {
 	// 启动首帧渲染完成后播一次入场编排（卡片错峰浮入）
 	renderer.ArmEnter()
 
+	// ---------------- 异常横幅 + Bark（P2）----------------
+	//
+	// 引擎不认识 monitor —— main 把各数据源装进 Inputs 喂给它。
+	// 公网探测独立于 netinfo 的 30 分钟 IP 轮询：掉线检测要分钟级，
+	// 且结果带 30s 缓存，不在渲染/采样路径上。
+	alertLog := alerts.LogPath
+	bark := alerts.NewBark(func() string { return store.Get().Alerts.BarkURL })
+	alertEng := alerts.NewEngine(func() alerts.Config {
+		a := store.Get().Alerts
+		return alerts.Config{
+			Enabled:  a.Enabled,
+			TempWarn: a.TempWarn, TempCrit: a.TempCrit, DiskWarn: a.DiskWarn,
+			BarkOn:   a.Enabled && a.BarkURL != "",
+			Debounce: a.Debounce,
+			Silence:  time.Duration(a.SilenceMin) * time.Minute,
+		}
+	}, alertLog, bark)
+	renderer.SetBanner(alertEng.CurrentView())
+	alertEng.OnChange(func(v *alerts.View) { renderer.SetBanner(v) })
+
+	netProbe := newNetProbe()
+	go alertEng.Run(10*time.Second, func() alerts.Inputs {
+		snap := mon.Snapshot()
+		maxPct, maxName := 0.0, ""
+		for _, v := range mon.Disk.GetVolumes() {
+			if v.UsedPercent > maxPct {
+				maxPct, maxName = v.UsedPercent, v.VolName
+			}
+		}
+		cpuRPM, hddRPM := fanCtrl.GetFanSpeeds()
+		smartBad, smartDetail := monitor.SMARTBad(mon.Disk.BaseDevices())
+		return alerts.Inputs{
+			Now:            time.Now(),
+			CPUTemp:        snap.CPUTemp,
+			MaxDiskTemp:    mon.Disk.MaxDiskTemp(),
+			MaxVolumePct:   maxPct,
+			MaxVolumeName:  maxName,
+			SMARTBad:       smartBad,
+			SMARTDetail:    smartDetail,
+			DockerAbnormal: snap.Docker.ContainersAbnormal,
+			FanRPM:         [2]int{cpuRPM, hddRPM},
+			NetOK:          netProbe.reachable(),
+		}
+	})
+
 	// ---------------- Web 面板 ----------------
 	if cfg.Web.Enabled && cfg.Web.Token != "" {
 		webServer := web.NewServer(mon, fanCtrl, rgbCtrl, brightness, store, screenCtl)
@@ -207,6 +288,8 @@ func main() {
 		webServer.Preview = func(page string) ([]byte, error) {
 			return renderer.PreviewPNG(page)
 		}
+		webServer.Alerts = alertEng
+		webServer.Bark = bark
 		// 面板改了显示设置 → 立刻反映到屏幕上（不必重启服务）
 		webServer.OnDisplay = func(dc config.DisplayConfig) {
 			pages := dc.EnabledPages()

@@ -20,6 +20,8 @@ package ui
 // ============================================================
 
 import (
+	"r1-toolbox/internal/alerts"
+
 	"fmt"
 	"strings"
 	"time"
@@ -188,6 +190,12 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 	// 顶部居中的小页名「环境」已删（洋哥 2026-10-31）：它只干"告诉你这是
 	// 哪一页"一件事，而底部三点页签干的就是这个。省出的高度给卡间隙。
 	if c.ClipVisible(0, 0, c.W, envTopH) {
+
+		// 异常横幅（P2 定稿）：0..36 通栏，**常态不画** —— 无横幅本身就是
+		// "一切正常"的信号。时钟 y≈80 起，出现/消失不移动任何现有元素。
+		if d.Banner != nil && len(d.Banner.Alerts) > 0 {
+			drawAlertBanner(c, fs, d.Banner)
+		}
 
 		// 时钟加粗（洋哥 2026-10-30：首页时间要更"实"）。规范第四节写的是
 		// 「最细体」，实机看细体 100px 在深底上有点飘，粗体更有压场感。
@@ -863,58 +871,30 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 		c.FillRoundRect(DPadX+DPad, syCtrlY+100, DCardW-2*DPad, 38, 19, colBtnBg)
 		DrawPartsTopC(c, fs, DPadX+DCardW/2, syCtrlY+115, FzCard,
 			[]TPart{{S: "关闭屏幕", Col: colBtnTx}})
-	}
 
-	// ---------------- 面板令牌 + 数据新鲜度 ----------------
-	//
-	// 左边是 Web 面板令牌：屏幕挂在自家墙上，能看到屏幕的人本来就有
-	// 物理接触权限 —— 令牌显示在这里比藏在 journal 里更符合威胁模型。
-	// 右边是**数据时间戳**：采样协程万一挂掉，屏幕数字会停在最后一秒，
-	// 只有这里能看出来。
-	if c.ClipVisible(DPadX, syPillY, DCardW, 40) {
-		DPill(c, DPadX, syPillY, 166, 40)
-		DPillDot(c, DPadX+16, syPillY+20, colMint)
-		tok := d.WebToken
-		// 令牌**默认不上屏**：参考图这一格写的是「令牌」+ 一串小信号条，
-		// 令牌值本身没有出现。墙上挂着的屏幕谁路过都能看见，把面板令牌
-		// 印在上面等于把钥匙贴门上。
-		//
-		// 但「完全不显示」把用户逼进了死胡同：浏览器首次打开面板要令牌，
-		// 提示却让他看屏幕 —— 屏幕上看不到。所以改成**点了才亮**：
-		// 触摸药丸 → 明文显示 10 秒（物理接触即授权），过后自动回到信号条。
-		if d.TokenRevealLeft() > 0 {
-			// 只画令牌本身，不画倒计时：这一格每 2 秒才随采样重绘一次，
-			// 倒计时会跳着走（10→8→6），看着像卡住。到点后下一次采样
-			// 自动回到信号条，最多多留 2 秒，肉眼无感。
-			DrawPartsTop(c, fs, DPadX+28, syPillY+11, FzCard, []TPart{
-				{S: tok, Col: colMint, Latin: true, Bold: true},
+		// 面板令牌行（2026-11-02 洋哥：从底部药丸行挪进控制卡）。
+		// 明文默认不上屏 —— 点这一行亮 10 秒（RevealToken），过期回到信号条。
+		// 借用了行下方 138..170 的空隙，卡高不变。
+		if left := d.TokenRevealLeft(); left > 0 {
+			// 只画令牌本身：这一格随数据采样 2 秒才重绘，倒计时会跳着走
+			DrawPartsTop(c, fs, DPadX+DPad, syCtrlY+148, FzCard, []TPart{
+				{S: d.WebToken, Col: colMint, Latin: true, Bold: true},
 			})
+			DrawPartsTopR(c, fs, DPadX+DCardW-DPad, syCtrlY+150, FzMeta,
+				[]TPart{{S: "10 秒后隐藏", Col: colTab, Latin: true}})
 		} else {
-			DrawPartsTop(c, fs, DPadX+28, syPillY+12, FzMeta,
-				splitParts("令牌", colSub))
+			DrawPartsTop(c, fs, DPadX+DPad, syCtrlY+148, FzMeta,
+				[]TPart{{S: "面板令牌", Col: colSub}})
 			lit := 0
-			if tok != "" {
+			if d.WebToken != "" {
 				lit = 6
 			}
-			DTokBars(c, DPadX+66, syPillY+24, lit, colMint)
+			DTokBars(c, DPadX+108, syCtrlY+162, lit, colMint)
+			DrawPartsTopR(c, fs, DPadX+DCardW-DPad, syCtrlY+150, FzMeta,
+				[]TPart{{S: "点按显示", Col: colTab, Latin: true}})
 		}
-
-		DPill(c, DPadX+178, syPillY, DCardW-178, 40)
-		upd := "—"
-		// 圆点是中性灰（参考图实测 92,92,92）：它只是"数据时间戳"的标记，
-		// 不是状态灯。沙金那一档留给环境页的容器药丸（29/30 → 沙金）。
-		// 超过 5 个采样周期没更新才转沙金警示 —— 那时屏幕数字已不可信。
-		dot := colDim
-		if !m.UpdatedAt.IsZero() {
-			upd = m.UpdatedAt.Format("15:04:05")
-			if time.Since(m.UpdatedAt) > 10*time.Second {
-				dot = colSand
-			}
-		}
-		DPillDot(c, DPadX+194, syPillY+20, dot)
-		DrawPartsTop(c, fs, DPadX+206, syPillY+12, FzMeta,
-			splitParts("数据 "+upd, colDim))
 	}
+
 }
 
 // DTokBars 令牌药丸里那串小信号条：9 根、宽 4、间距 3，前 lit 根点亮。
@@ -933,11 +913,35 @@ func DTokBars(c *Canvas, x, yBase, lit int, accent RGBA) {
 	}
 }
 
+// drawAlertBanner 异常横幅（P2 视觉定稿）：
+//   - 故障(crit)珊瑚底白字、预警(warn)沙金底深字 —— 白字在沙金上不清
+//   - 文案必须短：376px 要同时放下"最严重一件"和右侧「共 N 项」
+//   - 警示三角用三段粗线拼（Canvas 没有多边形原语）
+func drawAlertBanner(c *Canvas, fs *FontSet, v *alerts.View) {
+	a, _ := v.Top()
+	bg, ink := RGBA{233, 193, 98, 255}, RGBA{62, 46, 8, 255} // 预警：沙金底深字
+	if a.Sev == alerts.SevCrit {
+		bg, ink = RGBA{219, 98, 86, 255}, RGBA{255, 255, 255, 255}
+	}
+	c.FillRect(0, 0, c.W, 36, bg)
+
+	cx, cy := 20.0, 18.0
+	c.Line(cx, cy-7, cx-8, cy+6, 2, ink)
+	c.Line(cx-8, cy+6, cx+8, cy+6, 2, ink)
+	c.Line(cx+8, cy+6, cx, cy-7, 2, ink)
+	c.Line(cx, cy-2, cx, cy+2, 2, ink) // 感叹号竖点
+
+	DrawPartsTop(c, fs, 38, 10, FzMeta,
+		splitParts(a.Text, ink))
+	DMetaR(c, fs, c.W-14, 12,
+		fmt.Sprintf("共 %d 项", len(v.Alerts)), ink)
+}
+
 // Tap 触屏：令牌药丸亮明文 10 秒；亮度滑条左半 -10% / 右半 +10%；
 // 关屏按钮触发 OnScreenOff。
 func (p *SysPage) Tap(x, y int, d *DrawCtx) {
-	// 令牌药丸（最底一行，不与上面两张卡重叠）
-	if x >= DPadX && x <= DPadX+166 && y >= syPillY && y <= syPillY+40 {
+	// 面板令牌行（控制卡底部）：点一下亮明文 10 秒
+	if x >= DPadX && x <= DPadX+DCardW && y >= syCtrlY+140 && y <= syCtrlY+170 {
 		d.RevealToken(10 * time.Second)
 		return
 	}

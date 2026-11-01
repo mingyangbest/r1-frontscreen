@@ -14,6 +14,7 @@ import (
 	"github.com/veandco/go-sdl2/sdl"
 	"github.com/veandco/go-sdl2/ttf"
 
+	"r1-toolbox/internal/alerts"
 	"r1-toolbox/internal/config"
 	"r1-toolbox/internal/hardware"
 	"r1-toolbox/internal/logx"
@@ -323,6 +324,14 @@ func (r *Renderer) applyPages(names []string) {
 // ApplyPages 启动时同步应用页面配置（渲染循环尚未启动，直接改即可）
 func (r *Renderer) ApplyPages(names []string) { r.applyPages(names) }
 
+// SetBanner 推送异常横幅视图（告警引擎协程调，任意时刻可调）。
+// 横幅在 0..36，出现/消失改变该区域内容，而 DataRects 不覆盖这里
+// —— 必须整页重画一次，否则旧横幅会残留在屏上。
+func (r *Renderer) SetBanner(v *alerts.View) {
+	r.Ctx.Banner = v
+	r.needFull = true
+}
+
 // PreviewPNG 面板的"实时预览"：按页名离屏重绘一帧，返回 PNG 字节。
 //
 // 与 cmd/preview 的本质区别：**同源**。这里的 monitor / 屏幕状态机 / 显示
@@ -355,6 +364,7 @@ func (r *Renderer) PreviewPNG(name string) ([]byte, error) {
 	d.Theme = r.theme
 	d.Clock24h = r.Ctx.Clock24h
 	d.WeatherOn = r.Ctx.WeatherOn
+	d.Banner = r.Ctx.Banner // 异常横幅也在预览里 —— 少了它预览就和屏上不一样
 	d.Mon = r.Ctx.Mon
 	d.Fan = r.Ctx.Fan
 	d.Screen = r.Ctx.Screen

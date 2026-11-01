@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"r1-toolbox/internal/alerts"
+
 	"fmt"
 	"os"
 	"time"
@@ -29,18 +31,19 @@ type DrawCtx struct {
 	// WebToken 面板令牌，显示在系统页底部 —— 「物理接触设备即授权」，
 	// 不需要去翻 journal 找。
 	WebToken string
+	// Banner 异常横幅（P2）：nil / 空 = 常态，屏上不画。
+	// 指针由告警引擎协程经 renderer.SetBanner 写入 —— 与 ApplyDisplay
+	// 同一套约定：渲染协程读，最多一帧半新半旧。
+	Banner *alerts.View
+
 	// Clock24h 24 小时制（true 显示 15:04，false 显示 3:04）
 	Clock24h bool
 	// WeatherOn 首页右上角天气图标与描述是否显示
 	WeatherOn bool
 
-	// TokenRevealUntil 令牌明文展示的截止时刻。
-	//
-	// 默认只画「已设置」信号条：屏幕挂在墙上，谁路过都能看见，把 8 位令牌
-	// 常年印在上面等于把钥匙贴门上。但完全不显示又走了另一个极端 ——
-	// 浏览器首次打开面板要令牌，用户不知道去哪找（旧文案甚至让他看屏幕，
-	// 而屏幕上根本没有）。折中：**点一下药丸才亮 10 秒**，物理接触即授权，
-	// 松手就走，墙上路过的人看不到。
+	// TokenRevealUntil 令牌明文展示的截止时刻（0 = 平时不显示）。
+	// 令牌行现在住在系统页「控制」卡里：明文默认不上屏，点一下才亮
+	// 10 秒 —— 物理接触即授权，路过的人看不到。
 	TokenRevealUntil time.Time
 
 	// OnScreenOff 由主程序注入：请求立即关屏（并可被触摸唤醒）
@@ -80,7 +83,7 @@ func (d *DrawCtx) ClockText() string {
 	return d.Now.Format("3:04")
 }
 
-// RevealToken 让令牌明文在屏上显示 d 时长（系统页点药丸时调用）。
+// RevealToken 让令牌明文在屏上显示 d 时长（控制卡令牌行点按时调用）。
 // 返回 false 表示没有令牌可显示（未生成）—— 调用方不必额外提示。
 func (d *DrawCtx) RevealToken(dur time.Duration) bool {
 	if d.WebToken == "" {
@@ -91,7 +94,7 @@ func (d *DrawCtx) RevealToken(dur time.Duration) bool {
 	return true
 }
 
-// TokenRevealLeft 令牌明文还剩多久；<=0 表示当前不该显示。
+// TokenRevealLeft 令牌明文还剩多久；<=0 表示当前该回到信号条。
 func (d *DrawCtx) TokenRevealLeft() time.Duration {
 	if d.WebToken == "" || d.TokenRevealUntil.IsZero() {
 		return 0

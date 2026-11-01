@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"r1-toolbox/internal/alerts"
 	"r1-toolbox/internal/config"
 	"r1-toolbox/internal/hardware"
 	"r1-toolbox/internal/logx"
@@ -29,6 +30,11 @@ type Server struct {
 	// OnDisplay 显示设置变更后的回调（主程序注入：把改动立刻推到屏幕上）。
 	// 为 nil 时只落盘，重启后生效 —— 面板不该因为屏幕没接上就拒绝保存。
 	OnDisplay func(config.DisplayConfig)
+
+	// Alerts 告警引擎（nil = 告警功能不可用，接口返回 501）
+	Alerts *alerts.Engine
+	// Bark 推送器（测试按钮用；正式推送走引擎内部）
+	Bark *alerts.Bark
 
 	// Preview 实时预览：按页名离屏重绘一帧 PNG（主程序注入渲染器闭包）。
 	// 为 nil 时 /api/preview 返回 501 —— 预览依赖屏幕在跑，纯 headless
@@ -99,6 +105,9 @@ func (s *Server) setupRoutes() {
 	router.GET("/api/config", s.handleConfig)
 	router.GET("/api/display", s.handleDisplayGet)
 	router.GET("/api/preview", s.handlePreview)
+	router.GET("/api/alerts", s.handleAlertsGet)
+	router.POST("/api/alerts/config", s.handleAlertsConfig)
+	router.POST("/api/alerts/test", s.handleAlertsTest)
 	router.POST("/api/display", s.handleDisplaySet)
 	router.GET("/api/hwmon/scan", s.handleHwmonScan)
 	router.POST("/api/brightness", s.handleBrightness)
@@ -349,6 +358,80 @@ func (s *Server) handlePreview(c *gin.Context) {
 		return
 	}
 	c.Data(200, "image/png", png)
+}
+
+// handleAlertsGet 当前告警 + 最近记录 + 阈值视图。
+// bark_url 永不回显（同面板令牌口径），只给 bark_set。
+func (s *Server) handleAlertsGet(c *gin.Context) {
+	if s.Alerts == nil {
+		c.JSON(501, gin.H{"error": "告警功能不可用"})
+		return
+	}
+	cfg := s.config.Get().Alerts
+	c.JSON(200, gin.H{
+		"active":      s.Alerts.Snapshot(),
+		"events":      alerts.ReadEvents(alerts.LogPath, 20),
+		"enabled":     cfg.Enabled,
+		"temp_warn":   cfg.TempWarn,
+		"temp_crit":   cfg.TempCrit,
+		"disk_warn":   cfg.DiskWarn,
+		"debounce":    cfg.Debounce,
+		"silence_min": cfg.SilenceMin,
+		"bark_set":    cfg.BarkURL != "",
+	})
+}
+
+// handleAlertsConfig 保存阈值 / Bark。bark_url 用指针三态：
+// nil=不改、""=清除、非空=设置（Normalize 里强校验 https）。
+func (s *Server) handleAlertsConfig(c *gin.Context) {
+	var req struct {
+		TempWarn   int     `json:"temp_warn"`
+		TempCrit   int     `json:"temp_crit"`
+		DiskWarn   int     `json:"disk_warn"`
+		Debounce   int     `json:"debounce"`
+		SilenceMin int     `json:"silence_min"`
+		BarkURL    *string `json:"bark_url"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	err := s.config.Update(func(cfg *config.Config) {
+		a := &cfg.Alerts
+		a.TempWarn, a.TempCrit, a.DiskWarn = req.TempWarn, req.TempCrit, req.DiskWarn
+		a.Debounce, a.SilenceMin = req.Debounce, req.SilenceMin
+		if req.BarkURL != nil {
+			a.BarkURL = *req.BarkURL
+		}
+		a.Normalize()
+	})
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	// 阈值变了让引擎立刻复查一轮 —— 不然最长要等 10s 才反映到横幅
+	if s.Alerts != nil {
+		s.Alerts.Kick()
+	}
+	c.JSON(200, gin.H{"success": true})
+}
+
+// handleAlertsTest 发一条实测通知。洋哥的验收标准：面板写入后，
+// 手机必须真的收到一条 —— 能不能收到以 Bark 的 HTTP 200 为准。
+func (s *Server) handleAlertsTest(c *gin.Context) {
+	if s.Bark == nil {
+		c.JSON(501, gin.H{"error": "Bark 未配置"})
+		return
+	}
+	if s.config.Get().Alerts.BarkURL == "" {
+		c.JSON(400, gin.H{"error": "尚未设置 Bark 地址"})
+		return
+	}
+	if err := s.Bark.Push("R1 测试", "这是一条测试通知，收到即通道正常"); err != nil {
+		c.JSON(502, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
 }
 
 func (s *Server) handleHwmonScan(c *gin.Context) {

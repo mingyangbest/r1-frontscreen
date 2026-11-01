@@ -28,10 +28,6 @@ import (
 // 只在系统页预览时用来读真实亮度（只读，不写硬件）。
 const previewBrightPath = "/sys/class/backlight/intel_backlight/brightness"
 
-// PreviewRevealToken 让预览把令牌明文画出来（对应真机上"点一下药丸"）。
-// 只有 cmd/preview 会置位，正式运行永远为 false。
-var PreviewRevealToken bool
-
 // RenderRealPage 用真实采样数据渲染整页（376 × 960，与真机同尺寸）。
 //
 // page：0 = 环境页，1 = 详情页，2 = 系统页。
@@ -60,9 +56,6 @@ func RenderRealPage(fs *FontSet, mon *monitor.SystemMonitor, page int, now time.
 		d.Clock24h = cfg.Display.Clock24
 		d.WeatherOn = cfg.Display.Weather
 		d.Theme = ThemeByName(cfg.Display.Theme)
-	}
-	if PreviewRevealToken {
-		d.TokenRevealUntil = now.Add(10 * time.Second)
 	}
 
 	// 与 renderer 的页面背景同款渐变，否则卡片边缘的对比度会失真

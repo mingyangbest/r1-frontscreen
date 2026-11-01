@@ -1,6 +1,8 @@
 package config
 
 import (
+	"strings"
+
 	"errors"
 	"fmt"
 	"os"
@@ -30,6 +32,7 @@ type Config struct {
 	Fan      FanConfig      `yaml:"fan"`
 	Web      WebConfig      `yaml:"web"`
 	Display  DisplayConfig  `yaml:"display"`
+	Alerts   AlertsConfig   `yaml:"alerts"`
 	Hardware HardwareConfig `yaml:"hardware"`
 	// Debug 打开明细日志（性能/采样审计）。默认关 —— 见 internal/logx。
 	Debug bool `yaml:"debug"`
@@ -102,6 +105,20 @@ type DisplayConfig struct {
 	PagesOn []string `yaml:"pages" json:"pages"`
 }
 
+// AlertsConfig 异常横幅与 Bark 通知。
+//
+// 阈值面板可调；bark_url **永不回显**（GET /api/alerts 只给 bark_set），
+// 面板传 *string：nil = 不修改，"" = 清除，非空 = 设置（必须 https://）。
+type AlertsConfig struct {
+	Enabled    bool   `yaml:"enabled" json:"enabled"`
+	TempWarn   int    `yaml:"temp_warn" json:"temp_warn"`     // 预警 °C
+	TempCrit   int    `yaml:"temp_crit" json:"temp_crit"`     // 故障 °C
+	DiskWarn   int    `yaml:"disk_warn" json:"disk_warn"`     // 容量预警 %
+	BarkURL    string `yaml:"bark_url" json:"-"`              // 永不回显
+	Debounce   int    `yaml:"debounce" json:"debounce"`       // 连续越界次数
+	SilenceMin int    `yaml:"silence_min" json:"silence_min"` // 同 key 静默（分钟）
+}
+
 // HardwareConfig 硬件节点路径
 type HardwareConfig struct {
 	BrightnessPath string `yaml:"brightness_path"`
@@ -127,6 +144,7 @@ func (c *Config) normalize() {
 	// 无条件再过一遍 Normalize：Theme 为空的分支刚填完默认值，
 	// 走这里等于自查一遍；非空分支负责把越界值拉回来（含页面两表）
 	c.Display.Normalize()
+	c.Alerts.Normalize()
 }
 
 // canonicalPages 全部合法页名，顺序即默认顺序
@@ -188,6 +206,45 @@ func (d *DisplayConfig) normalizePages() {
 	d.PagesOn = on
 }
 
+// Normalize 阈值收敛。约束比 Display 松（纯数字区间），但两条硬规则：
+//   - TempCrit 必须大于 TempWarn，不然预警档永远够不着
+//   - BarkURL 只接受 https://（明文 http 会把 key 暴露给链路），非法即清空
+func (a *AlertsConfig) Normalize() {
+	// 无条件收敛 —— 不能在 Enabled=false 时跳过：老配置文件没有 alerts
+	// 段，Unmarshal 后阈值全是 0，"温度 47 ≥ 阈值 0" 会立刻误触发
+	// （2026-11-01 实测翻车）。停用只意味着引擎不评估，阈值照常归位。
+	clamp := func(v, lo, hi, def int) int {
+		if v < lo || v > hi {
+			return def
+		}
+		return v
+	}
+	a.TempWarn = clamp(a.TempWarn, 40, 95, 70)
+	a.TempCrit = clamp(a.TempCrit, 50, 110, 80)
+	a.DiskWarn = clamp(a.DiskWarn, 50, 99, 90)
+	a.Debounce = clamp(a.Debounce, 1, 10, 3)
+	a.SilenceMin = clamp(a.SilenceMin, 5, 1440, 30)
+	if a.TempCrit <= a.TempWarn {
+		a.TempWarn = a.TempCrit - 10
+		if a.TempWarn < 40 {
+			a.TempWarn = 40
+		}
+	}
+	a.BarkURL = validBarkURL(a.BarkURL)
+}
+
+// validBarkURL 空串合法（=未启用）；非空必须 https 前缀且像样
+func validBarkURL(u string) string {
+	u = strings.TrimSpace(u)
+	if u == "" {
+		return ""
+	}
+	if !strings.HasPrefix(u, "https://") || len(u) < len("https://x/xx") {
+		return ""
+	}
+	return u
+}
+
 // EnabledPages 按 PageOrder 的顺序返回启用的页名（渲染器用这个建页列表）
 func (d *DisplayConfig) EnabledPages() []string {
 	on := map[string]bool{}
@@ -228,7 +285,11 @@ func LoadFrom(path string) (*Config, error) {
 		}
 		return DefaultConfig(), fmt.Errorf("读取配置 %s: %w", path, err)
 	}
-	var cfg Config
+	// 以默认值为底再 Unmarshal：文件里缺的段（alerts、display 这些
+	// 后来加的）直接继承默认值 —— 否则 bool 字段被零值解成 false，
+	// "没配置过"和"配置成关闭"就永远分不清（alerts 的 enabled、
+	// display 的 weather 都在这上面栽过）。
+	cfg := *DefaultConfig()
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return DefaultConfig(), fmt.Errorf("解析配置 %s: %w", path, err)
 	}
@@ -469,6 +530,8 @@ func DefaultConfig() *Config {
 		Display: DisplayConfig{Theme: "ink", Clock24: true, Weather: true, SampleSec: 2,
 			PageOrder: []string{"env", "detail", "system"},
 			PagesOn:   []string{"env", "detail", "system"}},
+		Alerts: AlertsConfig{Enabled: true, TempWarn: 70, TempCrit: 80, DiskWarn: 90,
+			Debounce: 3, SilenceMin: 30},
 		Hardware: HardwareConfig{
 			BrightnessPath: "/sys/devices/pci0000:00/0000:00:02.0/drm/card0/card0-DSI-1/intel_backlight/brightness",
 			HwmonPath:      "/sys/class/hwmon/hwmon3",

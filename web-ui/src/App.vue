@@ -235,6 +235,66 @@
         </div>
       </section>
 
+      <!-- ── 告警 ── -->
+      <section class="card">
+        <div class="hd">
+          <span class="sq" style="background:#dc2626"></span>
+          <h2>告警</h2>
+          <span class="en">ALERTS</span>
+          <span class="hd-right">{{ alerts.active.length ? alerts.active.length + ' 项异常' : '一切正常' }}</span>
+        </div>
+        <div class="bd">
+          <div v-if="alerts.active.length" class="alist">
+            <div class="arow" v-for="a in alerts.active" :key="a.key">
+              <span class="asev" :class="a.sev">{{ a.sev === 'crit' ? '故障' : '预警' }}</span>
+              <span class="atxt">{{ a.text }}</span>
+            </div>
+          </div>
+          <div v-else class="empty">当前没有活跃告警 —— 屏幕顶部也不会有横幅。</div>
+
+          <div class="row top mt">
+            <div class="field">
+              <label>温度预警 / 故障（°C）</label>
+              <div class="inline">
+                <input class="num xs" type="number" v-model.number="alertForm.temp_warn" />
+                <span class="unit">/</span>
+                <input class="num xs" type="number" v-model.number="alertForm.temp_crit" />
+                <button class="btn ghost sm" @click="saveAlerts()">应用</button>
+              </div>
+            </div>
+            <div class="field">
+              <label>磁盘容量预警（%）</label>
+              <div class="inline">
+                <input class="num xs" type="number" v-model.number="alertForm.disk_warn" />
+                <button class="btn ghost sm" @click="saveAlerts()">应用</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="row top mt">
+            <div class="field grow">
+              <label>Bark 推送 {{ alerts.bark_set ? '（已设置，留空保存则不修改）' : '（未设置）' }}</label>
+              <div class="inline">
+                <input class="txt" type="password" v-model="alertForm.bark_url"
+                       placeholder="https://api.day.app/你的key" autocomplete="off" />
+                <button class="btn ghost sm" @click="saveBark()">保存</button>
+                <button class="btn primary sm" @click="testBark()">发送测试</button>
+              </div>
+              <div class="hint">仅支持 https；key 只写入设备配置文件，接口不回显。</div>
+            </div>
+          </div>
+
+          <div v-if="alerts.events.length" class="mt">
+            <label class="lab">最近记录</label>
+            <div class="hwrow" v-for="(e, i) in alerts.events" :key="i">
+              <span class="hwkey">{{ fmtTime(e.at) }}</span>
+              <span class="asev mini" :class="e.kind === 'trigger' ? e.sev : 'rec'">{{ e.kind === 'trigger' ? '触发' : '恢复' }}</span>
+              <span class="hwval">{{ e.text }}</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- ── 风扇 + 灯效 ── -->
       <div class="grid2">
         <section class="card">
@@ -410,6 +470,40 @@ const display = reactive({
 })
 const pageLabels = { env: '环境', detail: '详情', system: '系统' }
 
+/* ── 告警 ── */
+const alerts = reactive({ active: [], events: [], bark_set: false, debounce: 3, silence_min: 30 })
+const alertForm = reactive({ temp_warn: 70, temp_crit: 80, disk_warn: 90, bark_url: '' })
+const loadAlerts = () => api('/api/alerts').then((d) => {
+  alerts.active = d.active || []
+  alerts.events = d.events || []
+  alerts.bark_set = !!d.bark_set
+  alerts.debounce = d.debounce
+  alerts.silence_min = d.silence_min
+  alertForm.temp_warn = d.temp_warn
+  alertForm.temp_crit = d.temp_crit
+  alertForm.disk_warn = d.disk_warn
+}).catch(() => {})
+const saveAlerts = (barkURL) => {
+  const payload = {
+    temp_warn: +alertForm.temp_warn, temp_crit: +alertForm.temp_crit,
+    disk_warn: +alertForm.disk_warn,
+    debounce: alerts.debounce, silence_min: alerts.silence_min,
+    bark_url: barkURL === undefined ? null : barkURL,
+  }
+  return api('/api/alerts/config', payload)
+    .then(() => { tip('告警设置已保存'); return loadAlerts() })
+    .catch(() => tip('告警设置保存失败'))
+}
+const saveBark = () => {
+  const v = alertForm.bark_url.trim()
+  if (v && !v.startsWith('https://')) return tip('Bark 地址必须以 https:// 开头')
+  return saveAlerts(v).then(() => { alertForm.bark_url = '' })
+}
+const testBark = () => api('/api/alerts/test', {})
+  .then((d) => { if (d.ok) tip('测试已发送，查收手机通知') })
+  .catch(() => tip('发送失败 —— 检查地址与网络'))
+const fmtTime = (t) => new Date(t).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+
 /* ── 实时预览 ── */
 const previewPage = ref('')
 const previewSrc = ref('')
@@ -529,7 +623,7 @@ const loadStatus = () =>
 
 const refreshAll = () => {
   loading.value = true
-  Promise.all([loadConfig(), loadDisplay(), loadStatus()])
+  Promise.all([loadConfig(), loadDisplay(), loadAlerts(), loadStatus()])
     .catch(() => tip('刷新失败，检查网络'))
     .finally(() => { loading.value = false })
 }
@@ -876,6 +970,23 @@ code {
 }
 .pv-note { flex: 1 1 200px; font-size: 12px; color: var(--ink3); line-height: 1.9; min-width: 180px; }
 .pv-note b { display: block; color: var(--ink2); font-weight: 600; margin-bottom: 4px; }
+
+.mt { margin-top: 16px; }
+.lab {
+  font-size: 11.5px; color: var(--ink2); letter-spacing: .06em;
+  display: block; margin-bottom: 6px;
+}
+.alist { display: flex; flex-direction: column; }
+.arow { display: flex; gap: 10px; align-items: center; padding: 5px 0; }
+.atxt { font-size: 13px; }
+.asev {
+  font-size: 11.5px; font-weight: 600; padding: 2px 9px;
+  border-radius: 6px; white-space: nowrap;
+}
+.asev.crit { background: #fdeded; color: #b02a2a; }
+.asev.warn { background: #fdf6e7; color: #92600b; }
+.asev.rec  { background: var(--accent-l); color: var(--accent-deep); }
+.asev.mini { padding: 1px 7px; }
 
 /* ── 页面与顺序 ── */
 .prow { display: flex; align-items: center; gap: 12px; padding: 5px 0; }

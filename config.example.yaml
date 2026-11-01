@@ -51,6 +51,18 @@ display:
   weather: true       # 首页右上角天气图标与描述
   sample_seconds: 2   # 屏幕数字刷新间隔，只接受 2 / 3 / 5
 
+# 异常横幅与 Bark 推送
+alerts:
+  enabled: true
+  temp_warn: 70      # 温度预警 °C
+  temp_crit: 80      # 温度故障 °C（必须大于 temp_warn）
+  disk_warn: 90      # 磁盘容量预警 %
+  # Bark 完整前缀（含 key），必须 https://；留空 = 不推送。
+  # 面板可改，接口永不回显；面板「发送测试」可实测一条。
+  bark_url: ""
+  debounce: 3        # 连续越界多少次才触发（防抖）
+  silence_min: 30    # 同一条告警的静默期（分钟）
+
 # 硬件路径
 hardware:
   brightness_path: /sys/devices/pci0000:00/0000:00:02.0/drm/card0/card0-DSI-1/intel_backlight/brightness
