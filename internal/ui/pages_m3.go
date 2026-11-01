@@ -341,29 +341,17 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 		})
 	}
 
-	// ---------------- 底部药丸（容器 / 运行时长）----------------
+	// ---------------- 底部药丸（运行时长）----------------
+	// 洋哥 2026-11-01：容器数量从这一行删掉 —— Docker 的三组计数已经
+	// 搬到系统页的 Docker 卡，首页只需回答"这台机器开着多久了"。
+	// 圆点固定薄荷绿：它现在表示"系统在跑"，不再承担容器的状态语义。
 	if c.ClipVisible(DPadX, envPillY, DCardW, envPillH) {
-		// 绿点 = Docker 可达且全部运行；读不到 = 灰点 + —
-		dot := colDim
-		if m.ContainersRunning >= 0 {
-			dot = colMint
-			if m.ContainersRunning != m.ContainersTotal {
-				dot = colSand
-			}
-		}
 		DPill(c, DPadX, envPillY, DCardW, envPillH)
 		// 圆点实测圆心 x=42（直径 8.5），文字起点 55、墨迹顶 853.5
-		DPillDot(c, DPadX+18, envPillY+envPillH/2, dot)
+		DPillDot(c, DPadX+18, envPillY+envPillH/2, colMint)
 
-		txt := fmt.Sprintf("容器 %d/%d 运行中",
-			m.ContainersRunning, m.ContainersTotal)
-		if m.ContainersRunning < 0 {
-			txt = "容器 —"
-		}
 		DrawPartsTop(c, fs, DPadX+31, envPillY+15, FzMeta, []TPart{
-			{S: txt, Col: colSub},
-			{S: "·", Col: colTab, Gap: 8},
-			{S: "已运行 " + formatUptime(m.UptimeSec), Col: colSub, Gap: 8},
+			{S: "已运行 " + formatUptime(m.UptimeSec), Col: colSub},
 		})
 	}
 }
