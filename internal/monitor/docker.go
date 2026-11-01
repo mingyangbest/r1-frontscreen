@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	"r1-toolbox/internal/logx"
@@ -32,48 +34,60 @@ var dockerHTTPClient = &http.Client{
 	},
 }
 
-// UpdateContainers 刷新 Docker 容器计数。失败时置 -1（未知），不回退旧值。
+// UpdateContainers 刷新 Docker 容器计数与运行中的容器名。
+// 失败时置 -1（未知），不回退旧值。
 func (s *SystemMonitor) UpdateContainers() {
-	run, total := fetchContainerCounts()
+	run, total, names := fetchContainers()
 
 	s.mu.Lock()
 	s.ContainersRunning, s.ContainersTotal = run, total
+	s.Containers = names
 	s.mu.Unlock()
 }
 
-// fetchContainerCounts 返回 (-1,-1) 表示未知
-func fetchContainerCounts() (int, int) {
+// fetchContainers 返回 (-1,-1,nil) 表示未知
+func fetchContainers() (int, int, []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", "http://docker/containers/json?all=1", nil)
 	if err != nil {
-		return -1, -1
+		return -1, -1, nil
 	}
 	resp, err := dockerHTTPClient.Do(req)
 	if err != nil {
 		logx.Debugf("[docker] 读取容器列表失败: %v", err)
-		return -1, -1
+		return -1, -1, nil
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		logx.Debugf("[docker] 容器列表返回 %d", resp.StatusCode)
-		return -1, -1
+		return -1, -1, nil
 	}
 
+	// Names 是 ["/容器名"] 形式（带前导斜杠），State 是 running/exited/created…
 	type ctrInfo struct {
-		State string `json:"State"`
+		Names []string `json:"Names"`
+		State string   `json:"State"`
 	}
 	var ctrs []ctrInfo
 	if json.NewDecoder(resp.Body).Decode(&ctrs) != nil {
-		return -1, -1
+		return -1, -1, nil
 	}
 
 	running := 0
+	names := make([]string, 0, len(ctrs))
 	for _, c := range ctrs {
-		if c.State == "running" {
-			running++
+		if c.State != "running" {
+			continue
+		}
+		running++
+		if len(c.Names) > 0 {
+			names = append(names, strings.TrimPrefix(c.Names[0], "/"))
 		}
 	}
-	return running, len(ctrs)
+	// 名字排序后再上屏：Docker API 的顺序不保证稳定，屏幕每 60 秒跳一次
+	// 顺序会让人以为容器在重启。
+	sort.Strings(names)
+	return running, len(ctrs), names
 }

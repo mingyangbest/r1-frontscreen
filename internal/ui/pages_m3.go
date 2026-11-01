@@ -215,11 +215,12 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 		DrawPartsTop(c, fs, DPadX, envDateY, FzDate, parts)
 
 		// 天气图标（右上，昼夜由 isNight 内部判断）。
-		// 2026-10-31 洋哥：图标放大 r 21→32。中心 (335,62)→(332,64)：
-		// 右沿 332+32=364 距屏右 12px、上沿 32、下沿 96 不压日期行（174）、
-		// 左沿不压时钟墨迹（"00:22" 右沿约 264）。构图全部按 r 比例缩放，
-		// 云掩码 s≈43 远小于上限 256（设计时就留的余量）。
-		DrawWeatherIcon(c, DPadX+DCardW-20, 64, 32, kind, 2.856)
+		// 2026-11-01 洋哥：还是太小 → r 32→46（面积 2 倍）。
+		// 位置受时钟制约：100px 的「10:48」占 x 24..264，图标只能用右侧
+		// x 270..372 这 102px，直径上限约 100px —— 46 已经接近这条硬上限。
+		// 中心 (318,96)：圆右沿 364、云体右沿约 368（距屏右 8px）、
+		// 上沿 50、下沿 142（日期行 174 之上），左沿 272 不压时钟。
+		DrawWeatherIcon(c, 318, 96, 46, kind, 2.856)
 	}
 
 	// ---------------- 三张指标小卡 ----------------
@@ -328,6 +329,16 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 		// （标题 601..618、上行 600..618），不是"标题一行、速率另起一行"。
 		drawRateRow(c, fs, DPadX+DCardW-DPad, envNetY+14, up, colSlate, true)
 		drawRateRow(c, fs, DPadX+DCardW-DPad, envNetY+41, dn, colMint, false)
+
+		// 今日累计收发：从系统页「上传·下载」卡搬来（洋哥 2026-11-01 ——
+		// 那张卡与这张讲的是同一件事，合并后系统页腾出一整张卡的位置）。
+		// 曲线底 796，卡底 826：这一行落在 798..814，正好卡在中间。
+		DrawPartsTop(c, fs, DPadX+DPad, envNetY+196, FzMeta, []TPart{
+			{S: "今日", Col: colDim},
+			{S: "收 " + fmtBytes(m.NetRxToday), Col: colSub, Gap: 7},
+			{S: "·", Col: colTab, Gap: 8},
+			{S: "发 " + fmtBytes(m.NetTxToday), Col: colSub, Gap: 8},
+		})
 	}
 
 	// ---------------- 底部药丸（容器 / 运行时长）----------------
@@ -415,7 +426,11 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 	// 首页只留「趋势」，每核分布这种细节归详情页：四行、条长 205px，
 	// 两个核差 10% 时长度差 20px，一眼可辨。
 	if c.ClipVisible(DPadX, dtCpuY, DCardW, dtCpuH) {
-		DCardBox(c, d, DPadX, dtCpuY, DCardW, dtCpuH, colMint)
+		// 卡色 slate（洋哥 2026-11-01：相邻卡片不能同色）。原来是 mint，
+		// 与第三张「磁盘」撞色 —— 虽然不相邻，但同页重复会让"每卡一色"
+		// 失去指代作用。改 slate 后四张全不同：slate/rose/mint/sand，
+		// 而且 CPU=slate 与环境页那张 CPU 小卡同色，语义更顺。
+		DCardBox(c, d, DPadX, dtCpuY, DCardW, dtCpuH, colSlate)
 		DCardTitle(c, fs, DPadX, dtCpuY+13, "CPU 负载", colSlate)
 		// 右上角原来是 load average（1m · 5m）—— 洋哥 2026-11-01 让删掉。
 		// 那个数对服务器有意义，但对墙上这块屏不直观：0.31 是好是坏，
@@ -625,7 +640,7 @@ func (p *SysPage) PageName() string { return "系统" }
 const (
 	syDevY, syDevH   = 112, 152
 	syNetY, syNetH   = 292, 140
-	sySpdY, sySpdH   = 460, 200
+	syCtrY, syCtrH   = 460, 200
 	syCtrlY, syCtrlH = 688, 170
 	syPillY          = 874
 )
@@ -638,7 +653,7 @@ func (p *SysPage) DataRects(d *DrawCtx) []Rect {
 	return []Rect{
 		{DPadX - 6, syDevY - 6, DCardW + 12, syDevH + 12},
 		{DPadX - 6, syNetY - 6, DCardW + 12, syNetH + 12},
-		{DPadX - 6, sySpdY - 6, DCardW + 12, sySpdH + 12},
+		{DPadX - 6, syCtrY - 6, DCardW + 12, syCtrH + 12},
 		{DPadX - 6, syCtrlY - 6, DCardW + 12, syCtrlH + 12},
 		{DPadX - 6, syPillY - 6, DCardW + 12, 40 + 12},
 	}
@@ -649,7 +664,7 @@ func (p *SysPage) CardRects() []Rect {
 	return []Rect{
 		{DPadX, syDevY, DCardW, syDevH},
 		{DPadX, syNetY, DCardW, syNetH},
-		{DPadX, sySpdY, DCardW, sySpdH},
+		{DPadX, syCtrY, DCardW, syCtrH},
 		{DPadX, syCtrlY, DCardW, syCtrlH},
 		{DPadX, syPillY, DCardW, 40},
 	}
@@ -785,63 +800,52 @@ func (p *SysPage) Draw(c *Canvas, d *DrawCtx) {
 			[]TPart{{S: fitText(fs, pub, FzCard, 200), Col: pubCol, Latin: true}})
 	}
 
-	// ---------------- 上传 · 下载 ----------------
-	if c.ClipVisible(DPadX, sySpdY, DCardW, sySpdH) {
-		DCardBox(c, d, DPadX, sySpdY, DCardW, sySpdH, colMint)
-		DCardTitle(c, fs, DPadX, sySpdY+13, "上传 · 下载", colMint)
-		up := clamp(d.Ease("sy.up", m.NetSendMBps), 0, 1e9)
-		dn := clamp(d.Ease("sy.dn", m.NetRecvMBps), 0, 1e9)
+	// ---------------- 容器 ----------------
+	// 2026-11-01 洋哥：原「上传·下载」卡与首页网络卡讲的是同一件事，删掉；
+	// 今日收发已并入首页网络卡。这里换成容器列表 —— NAS 屏上「服务还在跑吗」
+	// 是高频问题，环境页只给了一个数字药丸，这里给名字。
+	if c.ClipVisible(DPadX, syCtrY, DCardW, syCtrH) {
+		DCardBox(c, d, DPadX, syCtrY, DCardW, syCtrH, colRose)
+		DCardTitle(c, fs, DPadX, syCtrY+13, "容器", colRose)
 
-		// 两列：左 上传、右 下载，各占半卡
-		DrawPartsTop(c, fs, DPadX+DPad, sySpdY+41, FzMeta,
-			[]TPart{{S: "上传", Col: colDim}})
-		uw := DrawPartsTop(c, fs, DPadX+DPad, sySpdY+72, FzNum, []TPart{
-			{S: fmtMBps(up), Col: colData, Latin: true, Bold: true},
-		})
-		DrawPartsTop(c, fs, DPadX+DPad+uw+6, sySpdY+86, FzMeta,
-			[]TPart{{S: "MB/s", Col: colDim, Latin: true}})
-
-		DrawPartsTop(c, fs, DPadX+176, sySpdY+41, FzMeta,
-			[]TPart{{S: "下载", Col: colDim}})
-		dw := DrawPartsTop(c, fs, DPadX+176, sySpdY+72, FzNum, []TPart{
-			{S: fmtMBps(dn), Col: colData, Latin: true, Bold: true},
-		})
-		DrawPartsTop(c, fs, DPadX+176+dw+6, sySpdY+86, FzMeta,
-			[]TPart{{S: "MB/s", Col: colDim, Latin: true}})
-
-		send := make([]float64, 0, len(m.NetHistory))
-		recv := make([]float64, 0, len(m.NetHistory))
-		scale := 0.1
-		for _, v := range m.NetHistory {
-			send = append(send, v[0])
-			recv = append(recv, v[1])
-			if v[0] > scale {
-				scale = v[0]
+		names := m.Containers
+		if m.ContainersRunning < 0 {
+			DMetaR(c, fs, DPadX+DCardW, syCtrY+16, "未接入 Docker", colDim)
+			DrawPartsTop(c, fs, DPadX+DPad, syCtrY+56, FzCard,
+				[]TPart{{S: "读不到 /var/run/docker.sock", Col: colDim}})
+		} else {
+			DMetaR(c, fs, DPadX+DCardW, syCtrY+16,
+				fmt.Sprintf("%d 运行 / %d 总计", m.ContainersRunning, m.ContainersTotal),
+				colDim)
+			if len(names) == 0 {
+				DrawPartsTop(c, fs, DPadX+DPad, syCtrY+56, FzCard,
+					[]TPart{{S: "没有运行中的容器", Col: colDim}})
 			}
-			if v[1] > scale {
-				scale = v[1]
+			// 每行 30：52 / 82 / 112 / 142 / 172，第五行墨迹底 185，卡底 200。
+			// 超过 5 个只报剩余数量 —— 一屏列 20 个容器没人读。
+			const maxRows = 5
+			for i, n := range names {
+				if i >= maxRows {
+					break
+				}
+				yInk := syCtrY + 52 + i*30
+				c.FillCircle(float64(DPadX+DPad+4), float64(yInk+6), 3.5, colMint)
+				DrawPartsTop(c, fs, DPadX+DPad+16, yInk, FzCard,
+					[]TPart{{S: fitText(fs, n, FzCard, DCardW-2*DPad-16), Col: colSub, Latin: true}})
+			}
+			if len(names) > maxRows {
+				DrawPartsTop(c, fs, DPadX+DPad+16, syCtrY+52+maxRows*30-6, FzMeta,
+					[]TPart{{S: fmt.Sprintf("… 还有 %d 个", len(names)-maxRows), Col: colDim}})
 			}
 		}
-		scale *= 1.15
-		// 曲线框 577..626（h=50）：三条网格实测 589 / 602 / 614.5，等距 12.75。
-		// 上一版 h=46 时网格间距 11.5，三条线整体偏上 3px —— 网格间距=框高/4，
-		// 所以框高必须按"网格间距 × 4"反推，不能只看框顶。
-		c.PlotFloor(DPadX+DPad, sySpdY+109, DCardW-2*DPad, 50, colMint)
-		c.Graph(DPadX+DPad, sySpdY+109, DCardW-2*DPad, 50, recv, scale, 60, colMint, 0.12)
-		c.Curve(DPadX+DPad, sySpdY+109, DCardW-2*DPad, 50, send, scale, 60, colSlate, 1.5, 0)
-
-		DrawPartsTop(c, fs, DPadX+DPad, sySpdY+175, FzMeta, []TPart{
-			{S: "今日", Col: colDim},
-			{S: "收 " + fmtBytes(m.NetRxToday), Col: colDim, Gap: 7},
-			{S: "·", Col: colTab, Gap: 8},
-			{S: "发 " + fmtBytes(m.NetTxToday), Col: colDim, Gap: 8},
-		})
 	}
 
 	// ---------------- 控制（亮度滑杆 + 关屏按钮）----------------
 	if c.ClipVisible(DPadX, syCtrlY, DCardW, syCtrlH) {
-		DCardBox(c, d, DPadX, syCtrlY, DCardW, syCtrlH, colSlate)
-		DCardTitle(c, fs, DPadX, syCtrlY+13, "控制", colSlate)
+		// 卡色 sage：与「设备」的 slate 区分开（洋哥 2026-11-01：宁可交错，
+		// 也不要在同一页里让两张卡长成同一个颜色）。
+		DCardBox(c, d, DPadX, syCtrlY, DCardW, syCtrlH, colSage)
+		DCardTitle(c, fs, DPadX, syCtrlY+13, "控制", colSage)
 
 		// 亮度走 screen.Control：它是背光的唯一状态源，
 		// 直接读硬件会让"Web 已息屏"这件事在界面上不可见。

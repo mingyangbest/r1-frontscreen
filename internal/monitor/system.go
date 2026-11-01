@@ -88,6 +88,8 @@ type SystemMonitor struct {
 	// Docker 容器（UpdateContainers 每 60s 刷新；-1 = 未知/读不到）
 	ContainersRunning int
 	ContainersTotal   int
+	// Containers 运行中的容器名（已排序、无前导斜杠）；nil = 读不到 Docker
+	Containers []string
 
 	Disk *DiskMonitor
 
@@ -150,6 +152,7 @@ type Snapshot struct {
 
 	ContainersRunning int
 	ContainersTotal   int
+	Containers        []string
 
 	// Disk 是共享子监控，自身带锁；快照里保留指针即可。
 	Disk *DiskMonitor
@@ -204,6 +207,7 @@ func (s *SystemMonitor) Snapshot() Snapshot {
 
 		ContainersRunning: s.ContainersRunning,
 		ContainersTotal:   s.ContainersTotal,
+		Containers:        cloneStrings(s.Containers),
 
 		Disk:      s.Disk,
 		UpdatedAt: s.updatedAt,
@@ -224,6 +228,17 @@ func clonePairs(in [][2]float64) [][2]float64 {
 		return nil
 	}
 	out := make([][2]float64, len(in))
+	copy(out, in)
+	return out
+}
+
+// cloneStrings 与 cloneFloats 同理：快照不能与采样协程共享底层数组，
+// 否则下一次 UpdateContainers 排序时渲染正读到一半，-race 会报竞争。
+func cloneStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
 	copy(out, in)
 	return out
 }
