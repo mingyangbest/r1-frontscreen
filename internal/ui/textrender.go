@@ -11,32 +11,45 @@ import (
 //  字体管理 + 文字纹理缓存
 //
 //  双字体族：
-//    - CJK   ：文泉驿微米黑（中文，字形完整）
-//    - LATIN ：Cantarell Thin / Light（数字与拉丁，纤细几何感）
+//    - CJK   ：文泉驿微米黑 / Noto Sans CJK（中文，字形完整）
+//    - LATIN ：IBM Plex Sans（嵌入二进制，数字等宽、工程感）
 //  两族分开渲染、分开缓存，由调用方决定用哪一族 —— 排版完全可控，
 //  避免依赖自动字体回退带来的基线错位。
+//
+//  LATIN 从 Cantarell 换成 IBM Plex 的原因见 fonts_embed.go 顶部注释：
+//  Cantarell 的比例数字会让时钟和百分比的宽度随数字变化跳动 40px。
 // ============================================================
 
-// 中文字体候选
+// 中文字体候选。
+//
+// 实测（2026-11-01）：R1 上**没有装 Noto Sans CJK** ——
+// /usr/share/fonts/opentype/noto/ 是空的，fc-list 里只有 Noto Mono（拉丁）。
+// 所以这台机器的中文一直落在 wqy-microhei（文泉驿微米黑），第一项探测必然
+// 失败后继续下探。把 Noto 排在前面是给「装了 fonts-noto-cjk 的机器」用的：
+// 有就自动用上思源，没有就退回 wqy，不需要用户配置。
+//
+// 想在这台机器上换成思源，得先 `apt install fonts-noto-cjk`（约 100MB）；
+// 把中文字体嵌进二进制不划算 —— 思源黑体单个字重就有 10MB。
 var cjkSearchPaths = []string{
+	"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
 	"/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
 	"/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
 	"/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
 	"/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc",
-	"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
 	"/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
 	"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 }
 
-// 拉丁字体候选：大字号用 Thin（纤细），小字号用 Light（可读）
-var latinThinPaths = []string{
+// 拉丁字体候选：**嵌入的 IBM Plex 优先**，系统字体只作兜底
+// （嵌入字体落盘失败时——比如 /tmp 只读——才退回 Cantarell/DejaVu）。
+var latinThinFallback = []string{
 	"/usr/share/fonts/opentype/cantarell/Cantarell-Thin.otf",
 	"/usr/share/fonts/opentype/cantarell/Cantarell-Light.otf",
 	"/usr/share/fonts/opentype/urw-base35/NimbusSans-Regular.otf",
 	"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 }
 
-var latinLightPaths = []string{
+var latinLightFallback = []string{
 	"/usr/share/fonts/opentype/cantarell/Cantarell-Light.otf",
 	"/usr/share/fonts/opentype/cantarell/Cantarell-Regular.otf",
 	"/usr/share/fonts/opentype/urw-base35/NimbusSans-Regular.otf",
@@ -45,10 +58,19 @@ var latinLightPaths = []string{
 
 // 拉丁粗体：精修稿里「指标大数字」是全屏最粗的一档（规范第四节：
 // 卡片数字=最粗体），细体大数字撑不住 46px 的分量，整页会显得没骨头。
-var latinBoldPaths = []string{
+var latinBoldFallback = []string{
 	"/usr/share/fonts/opentype/cantarell/Cantarell-Bold.otf",
 	"/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 	"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+}
+
+// latinCandidates 把嵌入字体排到前面（路径为空则跳过），再接系统兜底
+func latinCandidates(embeddedName string, fallback []string) []string {
+	out := make([]string, 0, len(fallback)+1)
+	if p := embeddedFontPath(embeddedName); p != "" {
+		out = append(out, p)
+	}
+	return append(out, fallback...)
 }
 
 func probeFont(paths []string) string {
@@ -84,9 +106,9 @@ func NewFontSet() *FontSet {
 		bold:  map[int]*ttf.Font{},
 	}
 	fs.cjkPath = probeFont(cjkSearchPaths)
-	fs.thinPath = probeFont(latinThinPaths)
-	fs.lightPath = probeFont(latinLightPaths)
-	fs.boldPath = probeFont(latinBoldPaths)
+	fs.thinPath = probeFont(latinCandidates("IBMPlexSans-Thin.ttf", latinThinFallback))
+	fs.lightPath = probeFont(latinCandidates("IBMPlexSans-Light.ttf", latinLightFallback))
+	fs.boldPath = probeFont(latinCandidates("IBMPlexSans-Bold.ttf", latinBoldFallback))
 	if fs.lightPath == "" {
 		fs.lightPath = fs.cjkPath
 	}
