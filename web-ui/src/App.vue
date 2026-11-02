@@ -481,6 +481,37 @@
               </div>
             </section>
 
+            <!-- ── 容器（只读） ── -->
+            <section class="card">
+              <div class="hd">
+                <span class="sq" style="background:#0e7490"></span>
+                <h2>容器</h2>
+                <span class="en">DOCKER</span>
+                <span class="hd-right">{{ dockerRunning }} / {{ docker.containers.length }} 运行</span>
+                <button class="btn ghost sm" @click="loadDocker" :class="{ busy: dockerLoading }">刷新</button>
+              </div>
+              <div class="bd">
+                <div v-if="docker.err" class="empty">{{ docker.err }}</div>
+                <div v-else-if="!docker.containers.length" class="empty">读取中…</div>
+                <div v-else class="dlist">
+                  <div class="drow" v-for="c in docker.containers" :key="c.id">
+                    <span class="ddot" :class="c.state"></span>
+                    <span class="dname" :title="c.image">{{ c.name }}</span>
+                    <span class="dmeta">{{ c.status }}</span>
+                    <button class="btn ghost sm" @click="showLogs(c)">日志</button>
+                  </div>
+                </div>
+
+                <div v-if="docker.logName" class="dlog">
+                  <div class="dlog-hd">
+                    <span><b>{{ docker.logName }}</b> · 最近 200 行</span>
+                    <span class="lnk" @click="closeLogs">关闭</span>
+                  </div>
+                  <pre>{{ docker.logLoading ? '读取中…' : (docker.logText || '（无输出）') }}</pre>
+                </div>
+              </div>
+            </section>
+
         </div>
       </div>
 
@@ -589,6 +620,28 @@ const testBark = () => api('/api/alerts/test', {})
   .then((d) => { if (d.ok) tip('测试已发送，查收手机通知') })
   .catch(() => tip('发送失败 —— 检查地址与网络'))
 const fmtTime = (t) => new Date(t).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+
+/* ── 容器（只读） ── */
+const docker = reactive({ containers: [], err: '', logName: '', logText: '', logLoading: false })
+const dockerLoading = ref(false)
+const dockerRunning = computed(() => docker.containers.filter((c) => c.state === 'running').length)
+const loadDocker = () => {
+  dockerLoading.value = true
+  return api('/api/docker/containers')
+    .then((d) => { docker.containers = d.containers || []; docker.err = '' })
+    .catch(() => { docker.err = '未接入 Docker（读不到 /var/run/docker.sock）' })
+    .finally(() => { dockerLoading.value = false })
+}
+const showLogs = (c) => {
+  docker.logName = c.name
+  docker.logText = ''
+  docker.logLoading = true
+  api(`/api/docker/logs?id=${encodeURIComponent(c.id)}&tail=200`)
+    .then((d) => { docker.logText = d.logs || '' })
+    .catch(() => { docker.logText = '读取失败（容器可能已停止或日志驱动不支持）' })
+    .finally(() => { docker.logLoading = false })
+}
+const closeLogs = () => { docker.logName = ''; docker.logText = '' }
 
 /* ── 历史（24h） ── */
 const histMetrics = [
@@ -779,7 +832,7 @@ const loadStatus = () =>
 
 const refreshAll = () => {
   loading.value = true
-  Promise.all([loadConfig(), loadDisplay(), loadAlerts(), loadSelfmon(), loadHistory(), loadStatus()])
+  Promise.all([loadConfig(), loadDisplay(), loadAlerts(), loadSelfmon(), loadHistory(), loadDocker(), loadStatus()])
     .catch(() => tip('刷新失败，检查网络'))
     .finally(() => { loading.value = false })
 }
@@ -1153,6 +1206,37 @@ code {
 .asev.warn { background: #fdf6e7; color: #92600b; }
 .asev.rec  { background: var(--accent-l); color: var(--accent-deep); }
 .asev.mini { padding: 1px 7px; }
+
+/* ── 容器（只读） ── */
+.dlist { max-height: 300px; overflow-y: auto; }
+.drow {
+  display: flex; align-items: center; gap: 9px; padding: 6px 0;
+  border-bottom: 1px solid var(--line2);
+}
+.drow:last-child { border-bottom: 0; }
+.ddot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: var(--ink3); }
+.ddot.running { background: var(--accent); }
+.ddot.restarting { background: #d97706; }
+.ddot.paused { background: #94a3b8; }
+.dname {
+  font-size: 12.5px; font-weight: 560; max-width: 150px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dmeta {
+  font-size: 11px; color: var(--ink3); flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dlog { margin-top: 12px; }
+.dlog-hd {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 11.5px; color: var(--ink2); margin-bottom: 6px;
+}
+.dlog pre {
+  margin: 0; background: #14171c; color: #d6dae2;
+  font-size: 11px; line-height: 1.6; padding: 10px 12px; border-radius: 8px;
+  max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
 
 /* ── 历史 ── */
 .hseg {

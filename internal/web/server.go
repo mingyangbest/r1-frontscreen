@@ -12,6 +12,7 @@ import (
 
 	"r1-toolbox/internal/alerts"
 	"r1-toolbox/internal/config"
+	"r1-toolbox/internal/dockerinfo"
 	"r1-toolbox/internal/hardware"
 	"r1-toolbox/internal/history"
 	"r1-toolbox/internal/logx"
@@ -114,6 +115,8 @@ func (s *Server) setupRoutes() {
 	router.GET("/api/alerts", s.handleAlertsGet)
 	router.GET("/api/selfmon", s.handleSelfmon)
 	router.GET("/api/history", s.handleHistory)
+	router.GET("/api/docker/containers", s.handleDockerList)
+	router.GET("/api/docker/logs", s.handleDockerLogs)
 	router.POST("/api/alerts/config", s.handleAlertsConfig)
 	router.POST("/api/alerts/test", s.handleAlertsTest)
 	router.POST("/api/display", s.handleDisplaySet)
@@ -348,6 +351,33 @@ func (s *Server) handleDisplaySet(c *gin.Context) {
 		s.OnDisplay(req)
 	}
 	c.JSON(200, gin.H{"success": true, "display": req})
+}
+
+// handleDockerList 容器列表（P5，只读）。读不到 socket 时 502 ——
+// 面板显示「未接入」，不给一组看起来正常的空数组。
+func (s *Server) handleDockerList(c *gin.Context) {
+	cs, err := dockerinfo.List()
+	if err != nil {
+		c.JSON(502, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"containers": cs})
+}
+
+// handleDockerLogs 容器最近 N 行日志（只读，最多 2000 行）。
+func (s *Server) handleDockerLogs(c *gin.Context) {
+	id := c.Query("id")
+	if id == "" {
+		c.JSON(400, gin.H{"error": "缺少 id"})
+		return
+	}
+	tail, _ := strconv.Atoi(c.Query("tail"))
+	logs, err := dockerinfo.Logs(id, tail)
+	if err != nil {
+		c.JSON(502, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"logs": logs})
 }
 
 // handleHistory 24 小时指标历史（P4）。降采样到 ~240 点：

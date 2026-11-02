@@ -13,6 +13,26 @@
 
 基于上游 [lemon6515/r1-toolbox-go](https://github.com/lemon6515/r1-toolbox-go) 增强 fork。
 
+## [v0.9.5] - 2026-11-02
+
+Docker 只读列表与日志（路线表 P5）。
+
+### 新增
+
+- **`internal/dockerinfo`**（只读）：`List()` 容器列表、`Logs()` 最近 N 行日志。
+  - 只调 Docker API 的两类 GET（`/containers/json`、`/containers/{id}/logs`），
+    **没有任何启停写操作** —— 编排交给 Portainer，面板围着这块屏转。
+  - 日志是 **8 字节帧头 + payload** 的多路复用流（stdout/stderr 分开），
+    容器开 TTY 时又是原始流；两种都能解（先探帧头合法性）。
+  - 日志 strip ANSI 转义序列：面板是 HTML `<pre>`，不去掉会满屏 `\x1b[33m`。
+  - 端口映射去重：同一端口对在 API 里会出现两条（IPv4/IPv6），
+    不去重渲染成「5433→8000 5433→8000」。
+- **`GET /api/docker/containers`** / **`GET /api/docker/logs?id=&tail=`**：
+  读不到 socket 时 502，面板显示「未接入」而不是空数组。
+- 面板「容器」卡（右列底部）：状态点 + 名称 + 人话状态 + 「日志」按钮；
+  点击在卡内展开深色日志区（最近 200 行，可滚动）。
+  列表运行中优先、同状态按名称排序，顺序稳定不随 API 抖动。
+
 ## [v0.9.4] - 2026-11-02
 
 面板两列布局 + 24 小时指标历史（路线表 P4）。
