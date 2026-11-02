@@ -278,6 +278,60 @@
             </div>
           </section>
 
+          <!-- ── 存储 ── -->
+          <section class="card">
+            <div class="hd">
+              <span class="sq" style="background:#7c3aed"></span>
+              <h2>存储</h2>
+              <span class="en">STORAGE</span>
+              <span class="hd-right" v-if="disk.scan">耗时 {{ (disk.scan.took_ms/1000).toFixed(1) }}s</span>
+            </div>
+            <div class="bd">
+              <div class="hseg">
+                <span v-for="v in disk.volumes" :key="v.mount"
+                      :class="{ on: disk.cur === v.mount }" @click="disk.cur = v.mount">
+                  {{ v.name }} {{ v.used_pct.toFixed(0) }}%
+                </span>
+              </div>
+
+              <div v-if="curVol" class="duse">
+                <div class="duse-bar"><i :style="{ width: Math.min(100, curVol.used_pct) + '%' }"></i></div>
+                <div class="duse-txt">
+                  已用 {{ curVol.used_gb.toFixed(0) }} / {{ curVol.total_gb.toFixed(0) }} GB
+                  · {{ curVol.device_type }}
+                </div>
+              </div>
+
+              <div class="inline mt">
+                <button class="btn ghost sm" @click="scanDisk" :class="{ busy: disk.scanning }">
+                  {{ disk.scanning ? '扫描中…' : (disk.scan ? '重新扫描' : '扫描大目录与大文件') }}
+                </button>
+                <span v-if="disk.scan && disk.scan.truncated" class="hsub">{{ disk.scan.note }}</span>
+              </div>
+
+              <div v-if="disk.scan && disk.scan.dirs.length" class="mt">
+                <label class="lab">一级目录（Top {{ disk.scan.dirs.length }}）</label>
+                <div class="drow2" v-for="d in disk.scan.dirs" :key="d.name">
+                  <span class="dname">{{ d.name }}</span>
+                  <div class="dbar"><i :style="{ width: dirPct(d) + '%' }"></i></div>
+                  <span class="dsz">{{ fmtSize(d.bytes) }}</span>
+                </div>
+              </div>
+
+              <div v-if="disk.scan && disk.scan.files.length" class="mt">
+                <label class="lab">大文件（&gt; 500 MB，Top {{ disk.scan.files.length }}）</label>
+                <div class="drow2" v-for="f in disk.scan.files" :key="f.path">
+                  <span class="dpath" :title="f.path">{{ f.path }}</span>
+                  <span class="dsz">{{ fmtSize(f.bytes) }}</span>
+                </div>
+              </div>
+
+              <div v-else-if="!disk.scan" class="hint mt">
+                扫描会给这块卷跑一遍 du，几百 GB 的机械盘约 5 秒；结果不落盘，刷新页面后需重新扫描。
+              </div>
+            </div>
+          </section>
+
           <section class="card">
           <div class="hd">
           <span class="sq" style="background:#7c3aed"></span>
@@ -621,6 +675,30 @@ const testBark = () => api('/api/alerts/test', {})
   .catch(() => tip('发送失败 —— 检查地址与网络'))
 const fmtTime = (t) => new Date(t).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 
+/* ── 存储 ── */
+const disk = reactive({ volumes: [], cur: '', scan: null, scanning: false })
+const curVol = computed(() => disk.volumes.find((v) => v.mount === disk.cur) || null)
+const loadDisk = () => api('/api/disk/volumes').then((d) => {
+  disk.volumes = d.volumes || []
+  // 默认选占用率最高的卷 —— 那才是"谁占的"这个问题最要紧的一块
+  if (!disk.cur && disk.volumes.length) {
+    disk.cur = disk.volumes.reduce((a, b) => (b.used_pct > a.used_pct ? b : a)).mount
+  }
+}).catch(() => {})
+const scanDisk = () => {
+  if (!disk.cur) return
+  disk.scanning = true
+  api('/api/disk/scan', { mount: disk.cur })
+    .then((d) => { disk.scan = d })
+    .catch(() => tip('扫描失败'))
+    .finally(() => { disk.scanning = false })
+}
+const fmtSize = (b) => (b >= 1 << 30 ? (b / (1 << 30)).toFixed(1) + ' GB' : (b / (1 << 20)).toFixed(0) + ' MB')
+const dirPct = (d) => {
+  const max = disk.scan && disk.scan.dirs.length ? disk.scan.dirs[0].bytes : 1
+  return Math.max(2, Math.round((d.bytes / max) * 100))
+}
+
 /* ── 容器（只读） ── */
 const docker = reactive({ containers: [], err: '', logName: '', logText: '', logLoading: false })
 const dockerLoading = ref(false)
@@ -832,7 +910,7 @@ const loadStatus = () =>
 
 const refreshAll = () => {
   loading.value = true
-  Promise.all([loadConfig(), loadDisplay(), loadAlerts(), loadSelfmon(), loadHistory(), loadDocker(), loadStatus()])
+  Promise.all([loadConfig(), loadDisplay(), loadAlerts(), loadSelfmon(), loadHistory(), loadDisk(), loadDocker(), loadStatus()])
     .catch(() => tip('刷新失败，检查网络'))
     .finally(() => { loading.value = false })
 }
@@ -891,7 +969,7 @@ const saveCurve = (f) => {
 
 const saveMapping = (f) =>
   api('/api/fan/mapping', { type: f.key, pwm_index: f.pwm, temp_sensor: f.sensor })
-    .then(() => tip('映射已保存，重启服务后生效'))
+    .then(() => tip('映射已应用（立即生效）'))
     .catch(() => tip('映射保存失败'))
 
 /* ── 灯效动作 ── */
@@ -1206,6 +1284,27 @@ code {
 .asev.warn { background: #fdf6e7; color: #92600b; }
 .asev.rec  { background: var(--accent-l); color: var(--accent-deep); }
 .asev.mini { padding: 1px 7px; }
+
+/* ── 存储 ── */
+.duse { margin-bottom: 4px; }
+.duse-bar { height: 8px; border-radius: 4px; background: var(--line2); overflow: hidden; }
+.duse-bar i { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+.duse-txt { font-size: 11.5px; color: var(--ink3); margin-top: 6px; font-variant-numeric: tabular-nums; }
+.drow2 { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+.drow2 .dname {
+  font-size: 12px; max-width: 120px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; flex: 0 0 auto;
+}
+.dbar { flex: 1; height: 6px; border-radius: 3px; background: var(--line2); overflow: hidden; }
+.dbar i { display: block; height: 100%; background: #a78bfa; border-radius: 3px; }
+.dsz {
+  font-size: 11.5px; color: var(--ink2); flex: 0 0 auto;
+  font-variant-numeric: tabular-nums; min-width: 62px; text-align: right;
+}
+.dpath {
+  font-size: 11px; color: var(--ink2); flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 
 /* ── 容器（只读） ── */
 .dlist { max-height: 300px; overflow-y: auto; }

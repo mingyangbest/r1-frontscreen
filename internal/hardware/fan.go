@@ -87,6 +87,57 @@ func NewFanController() *FanController {
 	}
 }
 
+// SetPWMIndex 热更新某路风扇的 PWM 通道（P6：映射不再需要重启）。
+//
+// 新通道立即切手动模式，Run() 的下一个 tick 就会往新通道写占空比。
+// **旧通道保持最后的占空比不动** —— IT8628 切回 auto 会让 BIOS 曲线接管，
+// 转速可能突然拉满，比停在当前值更吓人；要彻底归还控制权请重启服务。
+// 值没变时直接返回，不刷日志（配置轮询每 5 秒会调一次）。
+func (f *FanController) SetPWMIndex(which string, idx int) {
+	if idx < 1 || idx > 5 {
+		return
+	}
+	f.mu.Lock()
+	var old int
+	if which == "cpu" {
+		old = f.cpuPWMIndex
+		f.cpuPWMIndex = idx
+	} else {
+		old = f.hddPWMIndex
+		f.hddPWMIndex = idx
+	}
+	f.mu.Unlock()
+	if old == idx {
+		return
+	}
+	if err := f.setPWMEnable(idx, 1); err != nil {
+		logx.Printf("【风扇】PWM%d 切手动失败: %v", idx, err)
+		return
+	}
+	logx.Printf("【风扇】%s PWM 通道 %d → %d（已生效，旧通道停在最后占空比）", which, old, idx)
+}
+
+// SetTempSensor 热更新某路风扇的温度源（如 "coretemp:Package id 0"）。
+// 空串忽略 —— 空温度源会让 TempForControl 直接落到兜底值，等于静默降级。
+func (f *FanController) SetTempSensor(which, sensor string) {
+	if sensor == "" {
+		return
+	}
+	f.mu.Lock()
+	var old string
+	if which == "cpu" {
+		old = f.cpuTempSensor
+		f.cpuTempSensor = sensor
+	} else {
+		old = f.hddTempSensor
+		f.hddTempSensor = sensor
+	}
+	f.mu.Unlock()
+	if old != sensor {
+		logx.Printf("【风扇】%s 温度源 %q → %q（已生效）", which, old, sensor)
+	}
+}
+
 // SetHDDTempSource 注入真实硬盘温度来源（由 main 接 monitor.DiskMonitor）
 func (f *FanController) SetHDDTempSource(fn func() float64) {
 	f.mu.Lock()

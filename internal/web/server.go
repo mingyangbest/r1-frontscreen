@@ -12,6 +12,7 @@ import (
 
 	"r1-toolbox/internal/alerts"
 	"r1-toolbox/internal/config"
+	"r1-toolbox/internal/diskusage"
 	"r1-toolbox/internal/dockerinfo"
 	"r1-toolbox/internal/hardware"
 	"r1-toolbox/internal/history"
@@ -117,6 +118,8 @@ func (s *Server) setupRoutes() {
 	router.GET("/api/history", s.handleHistory)
 	router.GET("/api/docker/containers", s.handleDockerList)
 	router.GET("/api/docker/logs", s.handleDockerLogs)
+	router.GET("/api/disk/volumes", s.handleDiskVolumes)
+	router.POST("/api/disk/scan", s.handleDiskScan)
 	router.POST("/api/alerts/config", s.handleAlertsConfig)
 	router.POST("/api/alerts/test", s.handleAlertsTest)
 	router.POST("/api/display", s.handleDisplaySet)
@@ -351,6 +354,46 @@ func (s *Server) handleDisplaySet(c *gin.Context) {
 		s.OnDisplay(req)
 	}
 	c.JSON(200, gin.H{"success": true, "display": req})
+}
+
+// handleDiskVolumes 卷列表（含用量）。面板「存储」卡的卷切换与用量条用。
+func (s *Server) handleDiskVolumes(c *gin.Context) {
+	vols := s.monitor.Disk.GetVolumes()
+	out := make([]gin.H, 0, len(vols))
+	for _, v := range vols {
+		out = append(out, gin.H{
+			"mount": v.Mount, "name": v.VolName, "device": v.Device,
+			"used_pct": v.UsedPercent, "used_gb": v.UsedGB, "total_gb": v.TotalGB,
+			"device_type": v.DeviceType,
+		})
+	}
+	c.JSON(200, gin.H{"volumes": out})
+}
+
+// handleDiskScan 磁盘占用分析（P6）。
+//
+// **mount 必须精确匹配已挂载的卷**：这个值会作为 du/find 的参数，
+// 接受任意路径等于把命令注入的入口开到面板上。
+func (s *Server) handleDiskScan(c *gin.Context) {
+	var req struct {
+		Mount string `json:"mount"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	ok := false
+	for _, v := range s.monitor.Disk.GetVolumes() {
+		if v.Mount == req.Mount {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		c.JSON(400, gin.H{"error": "未知挂载点（只允许已挂载的卷）"})
+		return
+	}
+	c.JSON(200, diskusage.Scan(req.Mount))
 }
 
 // handleDockerList 容器列表（P5，只读）。读不到 socket 时 502 ——
@@ -670,5 +713,11 @@ func (s *Server) handleFanMapping(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, gin.H{"success": true, "note": "PWM 映射需重启服务后生效"})
+	// P6：映射热重载 —— 写配置之后同步到运行中的 FanController，
+	// 不再需要重启服务（2026-11-02 洋哥：把"改了不生效"的尾巴剪掉）。
+	if s.fanCtrl != nil {
+		s.fanCtrl.SetPWMIndex(req.Type, req.PWMIndex)
+		s.fanCtrl.SetTempSensor(req.Type, req.TempSensor)
+	}
+	c.JSON(200, gin.H{"success": true})
 }

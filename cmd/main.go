@@ -490,6 +490,12 @@ func main() {
 			if fresh, err := config.LoadFrom(store.Path()); err == nil {
 				screenTimeout = time.Duration(fresh.Screen.Timeout) * time.Second
 				screenCtl.SetDayNight(fresh.Screen.Brightness, fresh.Screen.NightBrightness)
+				// P6：风扇映射热重载 —— 配置文件被外部改动也生效。
+				// 两个方法的内部判等：值没变直接返回，不刷日志、不写 hwmon。
+				fanCtrl.SetPWMIndex("cpu", fresh.Fan.CPU.PWMIndex)
+				fanCtrl.SetPWMIndex("hdd", fresh.Fan.HDD.PWMIndex)
+				fanCtrl.SetTempSensor("cpu", fresh.Fan.CPU.TempSensor)
+				fanCtrl.SetTempSensor("hdd", fresh.Fan.HDD.TempSensor)
 				store.Replace(*fresh)
 				if fresh.Debug != cfg.Debug {
 					logx.SetDebug(fresh.Debug)
