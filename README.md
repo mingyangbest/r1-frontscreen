@@ -2,6 +2,13 @@
 
 海康威视 R1 / R1X NAS 前置触摸屏的硬件管理工具：Material You 三页信息面板（环境/详情/系统）、Web 控制面板、智能风扇调速、天气展示。
 
+> **能装的机器只有一个系列**：海康威视 **R1 / R1X**（Intel N100）。它内置一块 376×960 的触摸屏，
+> 程序用 KMS/DRM（`/dev/dri/card*`）直接画在屏上，再读背光 sysfs 与风扇 hwmon 做控制。
+> 普通 PC、群晖、威联通装了也点不亮 —— 它们没有这块屏，也没有对应的背光与风扇节点。
+> 还需要能 SSH 进 fnOS（或 Debian 系）并拿到 `sudo`。
+>
+> 满足这三条就往下看 [部署方式](#部署方式)：一条命令装完，不用装 Go，也不用编译。
+
 > 本项目基于 [lemon6515/r1-toolbox-go](https://github.com/lemon6515/r1-toolbox-go) 增强 fork 而来，遵循上游 **GPL-3.0 + Commons Clause** 许可证，感谢上游作者的开源工作。
 
 ## 界面预览
@@ -101,11 +108,11 @@
 
 ## 部署方式
 
-> **不想在本机装 Go？** [Releases](https://github.com/mingyangbest/r1-frontscreen/releases) 提供预编译二进制。
-> R1 / R1X 是 Intel N100（**x86_64**），请取 `r1-toolbox-linux-amd64`；
-> `r1-toolbox-linux-arm64` 仅供其他 ARM 主板使用，装到 R1 上会直接「无法执行」。
+> **三条硬前提**：海康 R1 / R1X · fnOS 或 Debian 系 · 能 SSH 进系统并拿到 `sudo`。
+> 不满足的话，装完只会得到一个跑起来但点不亮屏幕的进程 —— 它要的是这台机器内置的那块屏，
+> 不是任何显示器。
 
-### 方式 A：一键脚本（推荐，宿主机 systemd 服务）
+### 方式 A：一条命令（推荐）
 
 ```bash
 git clone https://github.com/mingyangbest/r1-frontscreen.git
@@ -113,33 +120,67 @@ cd r1-frontscreen
 sudo ./install.sh
 ```
 
-脚本自动完成：系统依赖安装（SDL2、smartmontools 等）、编译、配置文件生成、systemd 服务注册（`Type=notify` + `WatchdogSec=30` 看门狗：主循环卡死 30 秒内自动重启，不再出现「进程活着但画面定格」）。
+脚本取 **Release 里的预编译包**，不装 Go、不编译，全程不提问：
 
-> 旧版升级：如果设备上已有 `Type=simple` 的旧单元，补一个 drop-in 即可启用看门狗：
->
-> ```bash
-> sudo mkdir -p /etc/systemd/system/r1-toolbox.service.d
-> printf '[Service]\nType=notify\nWatchdogSec=30\n' | \
->   sudo tee /etc/systemd/system/r1-toolbox.service.d/override.conf
-> sudo systemctl daemon-reload && sudo systemctl restart r1-toolbox
-> ```
+1. 先检查机型、`/dev/fb0`、`/dev/dri/card*`，不对就停下来说清楚原因
+2. 只装运行时依赖（`libsdl2-2.0-0`、`libsdl2-ttf-2.0-0`、中文字体、`smartmontools`、`lm-sensors`、`i2c-tools`）
+3. 下载 `r1-toolbox-linux-amd64` 并校验架构（Release 带 `.sha256` 时一并核对），旧二进制自动备份
+4. 已有配置 `/etc/r1-toolbox/config.yaml` **先备份、不覆盖**（备份在 `/var/backups/r1-toolbox/`），只补缺失的
 
-> 说明：仓库改名为 **R1 FrontScreen**，但服务名、二进制名、配置路径沿用上游的 `r1-toolbox`（`systemd` 单元 / `/usr/local/bin/r1-toolbox` / `/etc/r1-toolbox/`），从上游或旧版升级无需任何迁移。
+装完会直接告诉你三件事：屏幕是否点亮、面板地址 `http://<设备IP>:8080`、令牌在屏幕哪一页看。
+
+常用参数：
+
+| 参数 | 用途 |
+|---|---|
+| `--port 9000` | 面板端口（仅首次生成配置时生效） |
+| `--version v0.9.6` | 装指定版本，默认最新 |
+| `--binary ./r1-toolbox-linux-amd64` | 离线安装：用本地包，不联网 |
+| `--from-source` | 从源码编译（改代码 / ARM 主板） |
+| `--fix-grub` | 移除 GRUB 里的关屏参数（会改引导配置） |
+| `--force` | 跳过硬件检查（无屏环境） |
+
+> **下载卡住**：GitHub 在国内时通时不通。在能上网的机器上取
+> `https://github.com/mingyangbest/r1-frontscreen/releases/latest/download/r1-toolbox-linux-amd64`，
+> `scp` 到 NAS，然后 `sudo ./install.sh --binary ./r1-toolbox-linux-amd64`。
+
+<details>
+<summary>从旧版升级 / 手动管理服务</summary>
+
+- 升级直接重跑 `sudo ./install.sh`：二进制换新、配置不动、服务自动重启。
+- 旧版 `install.sh` 把配置写在 `/etc/r1-control/config.yaml`，和程序读的路径不是一个地方；
+  新脚本会把它迁移到 `/etc/r1-toolbox/config.yaml`，你设过的端口与风扇曲线不会丢。
+- 旧单元是 `Type=simple` 的话，新单元会覆盖它；如果另外加过 drop-in，记得删掉重复的
+  `Type=` / `WatchdogSec=`：
 
 ```bash
-sudo systemctl start r1-toolbox    # 启动（开机自启默认开启）
-sudo systemctl status r1-toolbox   # 查看状态
-sudo journalctl -u r1-toolbox -f   # 看日志
+sudo mkdir -p /etc/systemd/system/r1-toolbox.service.d
+printf '[Service]\nType=notify\nWatchdogSec=30\n' | \
+  sudo tee /etc/systemd/system/r1-toolbox.service.d/override.conf
+sudo systemctl daemon-reload && sudo systemctl restart r1-toolbox
 ```
 
-### 方式 B：Docker 编译（本机没有 Go 环境时）
+- 服务名、二进制名、配置路径沿用上游的 `r1-toolbox`（`systemd` 单元 / `/usr/local/bin/r1-toolbox` / `/etc/r1-toolbox/`），从上游或旧版升级无需迁移。
 
 ```bash
-# 用 Docker 编译出二进制，产物落在 ./build/r1-toolbox
-docker compose run --rm build
+sudo systemctl status r1-toolbox   # 查看状态
+sudo journalctl -u r1-toolbox -f   # 看日志
+/usr/local/bin/r1-toolbox --version  # 查当前版本，不会启动第二个实例
+```
 
-# 然后用仓库里的 install.sh 部署，或手动复制：
-sudo cp build/r1-toolbox /usr/local/bin/
+</details>
+
+### 方式 B：从源码编译（改代码 / ARM 主板）
+
+```bash
+sudo ./install.sh --from-source
+```
+
+会装 Go 与 SDL2 开发库再 `make build`。R1 上首次编译约 1–3 分钟；ARM 主板只能走这条。
+没有 Go 环境也可以用仓库里的 Docker 编译：
+
+```bash
+docker compose run --rm build      # 产物落在 ./build/r1-toolbox
 ```
 
 ### 方式 C：Docker 容器运行（⚠️ 实验性）
@@ -154,7 +195,8 @@ docker compose up -d screen   # privileged + /dev/fb0 + host 网络
 
 ### 方式 D：fpk 应用包（飞牛应用中心形态）
 
-用飞牛官方 fnpack 工具打包为 `.fpk` 手动安装（本仓库暂未附带打包配置，走方式 A 即可）。
+那才是完全不懂命令行的人能「点一下装好」的形态，但要走飞牛官方 `fnpack` 打包并逐固件实测。
+**本仓库暂未附带打包配置**，现在请走方式 A。
 
 ## Web 控制面板
 
