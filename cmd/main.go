@@ -106,7 +106,40 @@ const (
 	fpsIdle  = 8
 )
 
+// 命令行只做两件事：查版本、看用法；不带参数时才进入常驻显示循环。
+//
+// 加这一段之前，`r1-toolbox --version` 会被当成普通启动 —— 在已经跑着服务的
+// 机器上执行它等于起第二个实例，和 systemd 那个抢 DRM，屏幕会闪一下再恢复。
+// 安装脚本要确认装上了什么版本，排障时也总要问一句，得有条安全的路。
+func printVersionOrHelp() bool {
+	for _, a := range os.Args[1:] {
+		switch a {
+		case "-version", "--version", "-v":
+			fmt.Printf("r1-toolbox %s (%s)\n", version, commit)
+			return true
+		case "-h", "--help":
+			fmt.Print(`R1 FrontScreen — 海康 R1 / R1X 前置触摸屏
+
+用法：
+  r1-toolbox              启动显示服务（通常由 systemd 管理）
+  r1-toolbox --version    打印版本与提交后退出
+  r1-toolbox --help       打印这段说明
+
+配置：/etc/r1-toolbox/config.yaml
+服务：systemctl status r1-toolbox
+日志：journalctl -u r1-toolbox -f
+`)
+			return true
+		}
+	}
+	return false
+}
+
 func main() {
+	if printVersionOrHelp() {
+		return
+	}
+
 	logx.Printf("R1 Toolbox %s (%s) 启动中...", version, commit)
 
 	// ---------------- 配置 ----------------

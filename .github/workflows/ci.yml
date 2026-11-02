@@ -110,6 +110,15 @@ jobs:
           ldd "$F" | grep -q 'libSDL2'
           ls -lh "$F"
 
+      # 一并发布校验和：install.sh 会拿它核对下载到的包，
+      # 没带 .sha256 的历史版本会自动跳过校验。
+      - name: 生成 SHA-256
+        run: |
+          F=build/r1-toolbox-linux-${{ matrix.arch }}
+          ( cd build && sha256sum "r1-toolbox-linux-${{ matrix.arch }}" \
+              > "r1-toolbox-linux-${{ matrix.arch }}.sha256" )
+          cat "$F.sha256"
+
       # 只挂产物，不碰正文。
       #
       # 这里原先开着 generate_release_notes，v0.9.5 就是被它坑的：tag 先于手写
@@ -121,4 +130,6 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: build/r1-toolbox-linux-${{ matrix.arch }}
+          files: |
+            build/r1-toolbox-linux-${{ matrix.arch }}
+            build/r1-toolbox-linux-${{ matrix.arch }}.sha256
