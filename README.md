@@ -112,6 +112,30 @@
 > 不满足的话，装完只会得到一个跑起来但点不亮屏幕的进程 —— 它要的是这台机器内置的那块屏，
 > 不是任何显示器。
 
+### 第一次装？按这个顺序来
+
+如果你是第一次接触这个项目，不用先读完整篇 README，按下面 5 步走，细节在下面的方式 A 里：
+
+1. 确认机器：海康 R1 / R1X，系统是 fnOS 或 Debian 系。不是这台机器就先停，装完屏幕也点不亮。
+2. 找到 NAS 的局域网 IP，在电脑终端里 SSH 登录（fnOS 需要先开启 SSH 服务）：
+
+```bash
+ssh <你的NAS用户名>@<NAS的局域网IP>
+```
+
+3. 只取安装脚本，两行装完，不用 clone 整个仓库、不用装 Go、不用编译：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mingyangbest/r1-frontscreen/master/install.sh -o install.sh
+sudo bash install.sh
+```
+
+脚本全程不提问，装完会告诉你屏幕、面板地址和令牌在哪看。
+4. 验收三件事：小屏点亮并能左右滑三页；浏览器打开 `http://<NAS的IP>:8080`；滑到系统页点“控制”卡里的“面板令牌”一行，显示 10 秒，填进面板。
+5. 屏幕没亮先别重装：看 `sudo journalctl -u r1-toolbox -n 50`；GRUB 里有关屏参数时用 `sudo bash install.sh --fix-grub` 后重启；确认看的是机器自带小屏，不是 HDMI。
+
+> 面板是明文 HTTP，只在内网用，不要映射到公网。以后升级重跑一次安装脚本就行，配置不会被覆盖。
+
 ### 方式 A：一条命令（推荐）
 
 ```bash
