@@ -100,7 +100,9 @@ fi
 c_ok "架构 $arch"
 
 product="$(cat /sys/class/dmi/id/product_name 2>/dev/null || echo '未知')"
-if printf '%s' "$product" | grep -qiE 'R1'; then
+# 按完整型号词匹配，不是「名字里含 R1」——后者会让 R1000 / XR1A 之类的机型混过去。
+# 常见取值：HS-AFS-R1、HS-AFS-R1X、HIKVISION R1。
+if printf '%s' "$product" | grep -qiE '(^|[^a-z0-9])r1x?($|[^a-z0-9])'; then
   c_ok "机型 $product"
 else
   c_warn "机型是「$product」，不像海康 R1 / R1X —— 屏幕相关功能大概率不可用"
@@ -302,6 +304,21 @@ EOF
   c_ok "已生成配置：$CONFIG（端口 $PORT）"
 fi
 
+# 自检要探的端口：新装是 --port，沿用旧配置的以文件里写的为准。
+# 拿默认 8080 去探一个跑在 9000 上的旧安装，会误报「端口没响应」——
+# 服务明明是好的，这种假警报比真错误更伤信任。
+detect_web_port() {
+  awk '
+    /^[A-Za-z_]+:/ { sec = $1; next }
+    sec == "web:" && $1 == "port:" { gsub(/[^0-9]/, "", $2); if ($2 != "") { print $2; exit } }
+  ' "$CONFIG"
+}
+
+EFFECTIVE_PORT="$PORT"
+if detected="$(detect_web_port)" && [ -n "$detected" ]; then
+  EFFECTIVE_PORT="$detected"
+fi
+
 # ---------------------------------------------------------------- systemd
 
 step "5/6 注册系统服务"
@@ -359,10 +376,10 @@ fi
 lan_ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)"
 lan_ip="${lan_ip:-<设备IP>}"
 
-if curl -s -o /dev/null --connect-timeout 3 "http://127.0.0.1:$PORT/" 2>/dev/null; then
-  c_ok "面板端口 $PORT 在监听"
+if curl -s -o /dev/null --connect-timeout 3 "http://127.0.0.1:$EFFECTIVE_PORT/" 2>/dev/null; then
+  c_ok "面板端口 $EFFECTIVE_PORT 在监听"
 else
-  c_warn "端口 $PORT 暂时没响应，稍等几秒再试；持续不通用 journalctl 看日志"
+  c_warn "端口 $EFFECTIVE_PORT 暂时没响应，稍等几秒再试；持续不通用 journalctl 看日志"
 fi
 
 cat <<EOF
@@ -370,7 +387,7 @@ cat <<EOF
 $(printf '\033[1m✓ 安装完成\033[0m')
 
   屏幕  应该已经点亮，左滑 / 右滑切换三页（环境 / 详情 / 系统）
-  面板  http://$lan_ip:$PORT
+  面板  http://$lan_ip:$EFFECTIVE_PORT
   令牌  在屏幕上滑到「系统」→ 点「控制」卡里的「面板令牌」一行，显示 10 秒
         也可以直接读：sudo grep token $CONFIG
 
