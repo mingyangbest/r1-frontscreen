@@ -110,9 +110,15 @@ jobs:
           ldd "$F" | grep -q 'libSDL2'
           ls -lh "$F"
 
+      # 只挂产物，不碰正文。
+      #
+      # 这里原先开着 generate_release_notes，v0.9.5 就是被它坑的：tag 先于手写
+      # 正文到达，它自动建出一个只有 "Full Changelog" 的空 Release；而矩阵两个
+      # job 各跑一次，于是那条链接在正文里出现了两遍。
+      # 现在正文的唯一来源是发版时手写的 notes（标题带「屏幕 / 后台」范围，
+      # 见 docs/RELEASE.md），CI 只负责往已有 Release 上挂二进制。
       - name: 上传到 Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: build/r1-toolbox-linux-${{ matrix.arch }}
-          generate_release_notes: true
