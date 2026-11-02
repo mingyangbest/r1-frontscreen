@@ -172,7 +172,7 @@ sudo systemctl daemon-reload && sudo systemctl restart r1-toolbox
 ```bash
 sudo systemctl status r1-toolbox   # 查看状态
 sudo journalctl -u r1-toolbox -f   # 看日志
-/usr/local/bin/r1-toolbox --version  # 查当前版本，不会启动第二个实例
+/usr/local/bin/r1-toolbox --version  # 查当前版本（v0.9.7+；更早的版本会启动第二个实例）
 ```
 
 </details>
