@@ -93,6 +93,22 @@ func (s *Service) PublicIP() PublicIP {
 	return s.p
 }
 
+// SetPublicIPForPreview 把公网 IP 快照改写成指定值。
+//
+// 只给 cmd/preview 出 README 截图时用：真实出口 IP 不该进公开仓库，
+// 统一换成 RFC 5737 的文档保留地址（203.0.113.42）。运行中的服务从不调用
+// 它 —— 那里只由 refreshIP 定时写入；ipinfo 的其余字段（归属地/运营商）
+// 不受影响，因为它们本来就不上屏。
+func (s *Service) SetPublicIPForPreview(ip string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.p.IP = ip
+	s.p.OK = ip != ""
+	if s.p.TriedAt.IsZero() {
+		s.p.TriedAt = time.Now()
+	}
+}
+
 // Start 启动后台刷新（非阻塞）
 func (s *Service) Start() { go s.loop() }
 

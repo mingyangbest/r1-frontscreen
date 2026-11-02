@@ -41,6 +41,8 @@ func main() {
 	interval := flag.Int("interval", 120, "预热采样间隔（毫秒）。出 README 截图时用 2000，与真机 fastEvery 一致，曲线形状才对得上")
 	ver := flag.String("version", "dev", "系统页设备卡显示的版本号，与真机保持同一口径（如 v0.7.0）")
 	wx := flag.String("wx", "", "强制天气图标类型：sun/cloud/rain/snow/fog/thunder/overcast/moon（验收配色与构图用）")
+	lan := flag.String("lan", "", "把局域网地址改写成该值（出 README 图时传 RFC 5737 地址）")
+	wan := flag.String("wan", "", "把公网地址改写成该值（同上）")
 	flag.Parse()
 
 	// 主程序是在运行时把 version 赋给 ui.Version 的（cmd/main.go），
@@ -75,6 +77,7 @@ func main() {
 		mon := warmUp(*warm, *interval)
 		now := time.Now()
 		net := fetchPublicIP()
+		redact(mon, net, *lan, *wan)
 		for i, name := range []string{"-env", "-detail", "-system"} {
 			writePNG(*out, name, ui.RenderRealPage(fs, mon, i, now, net))
 		}
@@ -90,8 +93,27 @@ func main() {
 	if *page == 2 {
 		net = fetchPublicIP()
 	}
-	c = ui.RenderRealPage(fs, warmUp(*warm, *interval), *page, time.Now(), net)
+	mon := warmUp(*warm, *interval)
+	redact(mon, net, *lan, *wan)
+	c = ui.RenderRealPage(fs, mon, *page, time.Now(), net)
 	writePNG(*out, "", c)
+}
+
+// redact 把出图里的地址换成调用方给的值。
+//
+// README 承诺「截图中局域网与公网地址已替换为 RFC 5737 文档保留地址」，
+// 靠事后 P 图做不到每次一致，也总有人忘。真值进公开仓库是不可逆的，
+// 所以让出图工具自己换：不传 -lan / -wan 就保持真值（本地看版式时用）。
+//
+// 改的是**本次采样的快照**（mon 是刚构造的、只给这一张图用），
+// 不碰任何运行中的服务。
+func redact(mon *monitor.SystemMonitor, net *netinfo.Service, lan, wan string) {
+	if lan != "" {
+		mon.LocalIP = lan
+	}
+	if net != nil && wan != "" {
+		net.SetPublicIPForPreview(wan)
+	}
 }
 
 // fetchPublicIP 起一次真实查询并等待首个结果。
