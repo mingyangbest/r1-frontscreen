@@ -144,12 +144,7 @@ cd r1-frontscreen
 sudo ./install.sh
 ```
 
-不想 clone 整个仓库的话，只取脚本也一样（默认路线不需要仓库里其它文件）：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/mingyangbest/r1-frontscreen/master/install.sh -o install.sh
-sudo bash install.sh
-```
+只想装一次、不打算改代码的话，用上面第 3 步那两行命令就够了，不必 clone 整个仓库。
 
 脚本取 **Release 里的预编译包**，不装 Go、不编译，全程不提问：
 
