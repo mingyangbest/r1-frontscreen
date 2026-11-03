@@ -52,7 +52,31 @@ fi
 
 chmod 600 "$ETC/config.yaml"
 
-# 4) 停用旧的 systemd 单元：两个实例会抢同一个 DRM 设备
+# 4) 把配置里的实际端口写进桌面入口
+#
+# 飞牛拼桌面入口地址的公式是 {protocol}://{hostname}:{port}{url}，port 是
+# 字面量，${port} / {port} 占位符都不会被替换（1.2.0903 实测）。
+#
+# 但这段代码实测也不生效：飞牛在解压完成后就解析并缓存了入口，执行到
+# install_callback 时已经晚了 —— 配置改成 9090 重装，文件层面 ui/config 是
+# 9090、应用监听 9090，桌面图标点出来还是包内写死的 8080。
+#
+# 留着它有两层意义：一是保证 ui/config 与用户配置一致（手动排查时对得上）；
+# 二是万一飞牛把解析时序挪到 install_callback 之后，它会自动生效。
+#
+# 已知限制：入口端口固定为包内 ui/config 写的 8080。用户改 config.yaml 的
+# web.port 后，桌面图标失效，面板仍可通过新端口手动访问（见文档 §5.4）。
+PORT=$(awk '/^[[:space:]]*port:/{print $2; exit}' "$ETC/config.yaml" 2>/dev/null)
+case "$PORT" in
+  ''|*[!0-9]*) PORT=8080 ;;
+esac
+
+UICFG="$APPDEST/ui/config"
+if [ -f "$UICFG" ]; then
+  sed -i "s|\"port\": \"[0-9]*\"|\"port\": \"$PORT\"|" "$UICFG"
+fi
+
+# 5) 停用旧的 systemd 单元：两个实例会抢同一个 DRM 设备
 UNIT=/etc/systemd/system/r1-toolbox.service
 if [ -f "$UNIT" ]; then
   mkdir -p "$VAR/legacy"
