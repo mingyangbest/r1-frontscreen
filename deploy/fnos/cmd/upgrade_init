@@ -1,6 +1,12 @@
 #!/bin/bash
 # 升级前：停服务并备份配置，升级失败可人工回退。
-"${TRIM_APPDEST}/cmd/main" stop >/dev/null 2>&1
+#
+# 注意：cmd 脚本由飞牛放在 /var/apps/<appname>/cmd/，不在 $TRIM_APPDEST 下
+# （APPDEST 只对应包里的 app/ 目录）。拼 $TRIM_APPDEST/cmd/main 会 exit 127，
+# 旧进程继续占着 DRM，新版本起不来。用脚本自身位置定位。
+CMD_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+"$CMD_DIR/main" stop >/dev/null 2>&1
 
 if [ -f "${TRIM_PKGETC}/config.yaml" ]; then
   mkdir -p "${TRIM_PKGVAR}/backup"
@@ -10,4 +16,5 @@ if [ -f "${TRIM_PKGETC}/config.yaml" ]; then
   ls -1t "${TRIM_PKGVAR}/backup"/config.yaml.* 2>/dev/null \
     | tail -n +6 | xargs -r rm -f
 fi
+
 exit 0

@@ -1,5 +1,11 @@
 #!/bin/bash
 # 卸载前：停服务，避免卸载过程中进程还在写 DRM。
-"${TRIM_APPDEST}/cmd/main" stop >/dev/null 2>&1
+#
+# 注意：cmd 脚本由飞牛放在 /var/apps/<appname>/cmd/，不在 $TRIM_APPDEST 下
+# （APPDEST 只对应包里的 app/ 目录）。拼 $TRIM_APPDEST/cmd/main 会 exit 127，
+# 服务根本停不下来。用脚本自身位置定位。
+CMD_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+"$CMD_DIR/main" stop >/dev/null 2>&1
 rm -f "${TRIM_PKGVAR}/stop.flag"
 exit 0
