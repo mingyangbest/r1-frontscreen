@@ -121,13 +121,21 @@ func printVersionOrHelp() bool {
 			fmt.Print(`R1 FrontScreen — 海康 R1 / R1X 前置触摸屏
 
 用法：
-  r1-toolbox              启动显示服务（通常由 systemd 管理）
+  r1-toolbox              启动显示服务（由应用中心或 systemd 管理）
   r1-toolbox --version    打印版本与提交后退出
   r1-toolbox --help       打印这段说明
 
-配置：/etc/r1-toolbox/config.yaml
-服务：systemctl status r1-toolbox
-日志：journalctl -u r1-toolbox -f
+配置：
+  应用中心安装  $TRIM_PKGETC/config.yaml
+  命令行安装    /etc/r1-toolbox/config.yaml
+
+服务：
+  应用中心      应用中心「R1 前置屏」→ 启动 / 停止
+  命令行        systemctl status r1-toolbox
+
+日志：
+  应用中心      $TRIM_PKGVAR/service.log
+  命令行        journalctl -u r1-toolbox -f
 `)
 			return true
 		}
@@ -179,7 +187,15 @@ func main() {
 	rgbCtrl := hardware.NewRGBController()
 	rgbCtrl.SetMode(cfg.RGB.Mode, cfg.RGB.Color)
 
-	brightness := hardware.NewBrightnessController(cfg.Hardware.BrightnessPath, 0, 96000)
+	// 背光路径：配置优先，为空则现场探测。配置里存的是完整绝对路径，
+	// 换机迁移或配置被清空时它可能失效；/sys/class/backlight/* 是稳定软链，
+	// 拿它兜底比让亮度静默失灵强。max_brightness 也一并读，不再写死 96000。
+	brightnessPath := cfg.Hardware.BrightnessPath
+	if brightnessPath == "" {
+		brightnessPath = hardware.DiscoverBrightnessPath()
+	}
+	brightness := hardware.NewBrightnessController(
+		brightnessPath, 0, hardware.ReadMaxBrightness(brightnessPath, 96000))
 
 	// ---------------- 屏幕状态机 ----------------
 	//

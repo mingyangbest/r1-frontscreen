@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/veandco/go-sdl2/sdl"
@@ -38,6 +40,21 @@ var cjkSearchPaths = []string{
 	"/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc",
 	"/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
 	"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+}
+
+// init 把随包字体排到搜索序列最前。
+//
+// 飞牛 fpk 下中文字体在 app/share/fonts（系统里未必装了 wqy），
+// R1_FONT_DIR 由 cmd/main 注入；命令行安装时该变量为空，序列保持原样。
+func init() {
+	d := os.Getenv("R1_FONT_DIR")
+	if d == "" {
+		return
+	}
+	cjkSearchPaths = append([]string{
+		filepath.Join(d, "wqy-microhei.ttc"),
+		filepath.Join(d, "wqy-zenhei.ttc"),
+	}, cjkSearchPaths...)
 }
 
 // 拉丁字体候选：**嵌入的 IBM Plex 优先**，系统字体只作兜底

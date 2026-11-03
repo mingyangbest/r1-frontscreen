@@ -1,0 +1,8 @@
+#!/bin/bash
+# 卸载后：清理运行痕迹。配置目录与 legacy 备份保留（用户数据 / 回退凭据）。
+rm -f "${TRIM_PKGVAR}/supervisor.pid" \
+      "${TRIM_PKGVAR}/worker.pid" \
+      "${TRIM_PKGVAR}/stop.flag" \
+      "${TRIM_PKGVAR}/heartbeat"
+rm -rf "${TRIM_PKGVAR}/runtime"
+exit 0

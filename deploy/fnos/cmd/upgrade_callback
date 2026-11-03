@@ -1,0 +1,22 @@
+#!/bin/bash
+# 升级后：重新校正硬件路径（换机迁移场景）。不做启动 —— 飞牛会自己拉起。
+
+ETC="${TRIM_PKGETC:?}"
+
+brightness=""
+for d in /sys/class/backlight/*/; do
+  [ -w "${d}brightness" ] && { brightness="/sys/class/backlight/$(basename "$d")/brightness"; break; }
+done
+
+hwmon=""
+for d in /sys/class/hwmon/hwmon*/; do
+  n=$(cat "${d}name" 2>/dev/null)
+  case "$n" in
+    it87|it8628|it8613) hwmon="/sys/class/hwmon/$(basename "$d")"; break ;;
+  esac
+done
+
+[ -n "$brightness" ] && sed -i "s|^\([[:space:]]*brightness_path:\).*|\1 $brightness|" "$ETC/config.yaml"
+[ -n "$hwmon" ] && sed -i "s|^\([[:space:]]*hwmon_path:\).*|\1 $hwmon|" "$ETC/config.yaml"
+
+exit 0

@@ -1,0 +1,70 @@
+# R1 Toolbox 配置文件示例
+# 安装时会交互式生成实际配置
+
+# 屏幕设置
+screen:
+  width: 376
+  height: 960
+  brightness: 36000
+  # 夜间（18:00–06:00，与天气图标同窗口）自动调暗后的背光值
+  # 0 = 关闭夜间调暗；只在昼夜切换瞬间生效，不会覆盖手动调节
+  night_brightness: 12000
+  timeout: 300  # 息屏时间（秒），0为常亮
+
+# RGB 灯效
+rgb:
+  mode: solid      # off/rainbow/breathing/solid
+  color: green     # red/orange/yellow/green/cyan/blue/purple/white
+  i2c_bus: "0"     # I2C 总线号
+
+fan:
+  cpu:
+    mode: auto
+    pwm_index: 3
+    temp_sensor: "it8628:temp1"
+    min_temp: 35
+    max_temp: 75
+    min_speed: 50
+    max_speed: 255
+  hdd:
+    mode: auto
+    pwm_index: 2
+    temp_sensor: "it8628:temp2"
+    min_temp: 30
+    max_temp: 45
+    min_speed: 50
+    max_speed: 255
+
+# Web 服务器
+web:
+  enabled: true
+  port: 8080
+  # token 首次启动自动生成并回写到本文件；所有 /api/* 要求 X-Token 头。
+  # 屏上默认只显示「已设置」，点一下系统页底部的令牌药丸可看明文 10 秒。
+  # 泄露了就改这里并重启服务（没有轮换接口）。
+  token: ""
+
+# 显示设置（管屏幕显示什么，与亮度/风扇那类硬件控制分开）
+display:
+  theme: ink          # ink=墨 / mono=素 / sand=沙 / jade=青
+  clock_24h: true     # false = 12 小时制（3:04，不带 AM/PM）
+  weather: true       # 首页右上角天气图标与描述
+  sample_seconds: 2   # 屏幕数字刷新间隔，只接受 2 / 3 / 5
+
+# 异常横幅与 Bark 推送
+alerts:
+  enabled: true
+  temp_warn: 70      # 温度预警 °C
+  temp_crit: 80      # 温度故障 °C（必须大于 temp_warn）
+  disk_warn: 90      # 磁盘容量预警 %
+  # Bark 完整前缀（含 key），必须 https://；留空 = 不推送。
+  # 面板可改，接口永不回显；面板「发送测试」可实测一条。
+  bark_url: ""
+  debounce: 3        # 连续越界多少次才触发（防抖）
+  silence_min: 30    # 同一条告警的静默期（分钟）
+
+# 硬件路径
+hardware:
+  brightness_path: /sys/devices/pci0000:00/0000:00:02.0/drm/card0/card0-DSI-1/intel_backlight/brightness
+  hwmon_path: /sys/class/hwmon/hwmon3
+  framebuffer: /dev/fb0

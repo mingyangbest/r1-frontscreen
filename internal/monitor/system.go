@@ -14,6 +14,8 @@ import (
 
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/mem"
+
+	"r1-toolbox/internal/config"
 )
 
 // SystemMonitor 采集系统实时指标。
@@ -676,7 +678,8 @@ type netDayState struct {
 	Tx   uint64 `json:"tx"`
 }
 
-const netDayFile = "/var/lib/r1-toolbox/net-day.json"
+// 顶层目录由 R1_DATA_DIR 决定，飞牛 fpk 下指向 $TRIM_PKGVAR。
+var netDayFile = config.DataFile("net-day.json")
 
 func (s *SystemMonitor) trackDay(rx, tx uint64) {
 	today := time.Now().Format("2006-01-02")

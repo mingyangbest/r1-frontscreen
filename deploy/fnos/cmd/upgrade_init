@@ -1,0 +1,13 @@
+#!/bin/bash
+# 升级前：停服务并备份配置，升级失败可人工回退。
+"${TRIM_APPDEST}/cmd/main" stop >/dev/null 2>&1
+
+if [ -f "${TRIM_PKGETC}/config.yaml" ]; then
+  mkdir -p "${TRIM_PKGVAR}/backup"
+  cp -a "${TRIM_PKGETC}/config.yaml" \
+        "${TRIM_PKGVAR}/backup/config.yaml.$(date +%Y%m%d-%H%M%S)"
+  # 只留最近 5 份，反复升级不至于把数据目录塞满
+  ls -1t "${TRIM_PKGVAR}/backup"/config.yaml.* 2>/dev/null \
+    | tail -n +6 | xargs -r rm -f
+fi
+exit 0

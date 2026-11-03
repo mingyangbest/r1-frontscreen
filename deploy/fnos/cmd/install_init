@@ -1,0 +1,53 @@
+#!/bin/bash
+# 安装前置检查。只读系统状态，不修改任何文件。
+# 判据以「这块屏是否存在」为主，DMI 只记录不拒绝 —— R1X 的 product_name 没有样本可验证。
+
+LOGFILE="${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+
+# SYSROOT 只在离线验证拒装逻辑时使用，生产环境为空
+SYS="${SYSROOT:-}"
+
+fail() {
+  echo "$1" > "$LOGFILE"
+  exit 1
+}
+
+# 1) 前置屏：DSI 接口且 376x960 —— 主判据，只有 R1/R1X 有这块屏
+found=0
+for f in "$SYS"/sys/class/drm/card*-DSI-1/modes; do
+  [ -f "$f" ] || continue
+  if grep -q "376x960" "$f" 2>/dev/null; then
+    found=1
+    break
+  fi
+done
+[ "$found" = "1" ] || fail "未检测到 376x960 的 DSI 前置屏。本应用依赖这块屏工作，安装已中止，系统未做任何修改。"
+
+# 2) 背光：必须存在可写节点
+bl=""
+for d in "$SYS"/sys/class/backlight/*/; do
+  [ -w "${d}brightness" ] && { bl="${d}brightness"; break; }
+done
+[ -n "$bl" ] || fail "未找到可写的背光节点。本应用需要控制背光，安装已中止。"
+
+# 3) 风扇：it87 系 hwmon 是 PWM 调速的前提
+fan=0
+for d in "$SYS"/sys/class/hwmon/hwmon*/; do
+  n=$(cat "${d}name" 2>/dev/null)
+  case "$n" in
+    it87|it8628|it8613) fan=1; break ;;
+  esac
+done
+[ "$fan" = "1" ] || fail "未找到 it87 系 hwmon。风扇调速不可用，安装已中止。"
+
+# 4) DMI：只记录，不作拒绝条件 —— R1X 的 product_name 没有样本可验证
+vendor=$(cat "$SYS"/sys/class/dmi/id/sys_vendor 2>/dev/null)
+product=$(cat "$SYS"/sys/class/dmi/id/product_name 2>/dev/null)
+echo "设备标识：${vendor:-未知} ${product:-未知}"
+
+# 5) 旧服务：只提示，不在这里动它
+if systemctl is-active --quiet r1-toolbox 2>/dev/null; then
+  echo "检测到命令行版 r1-toolbox 正在运行。安装完成后将自动停用它，现有配置会被迁移。"
+fi
+
+exit 0

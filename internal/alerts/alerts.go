@@ -28,11 +28,16 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"r1-toolbox/internal/config"
 )
 
 // LogPath 触发/恢复记录的唯一路径。引擎写、面板读，共用一份口径
-// —— 不做成注入字段：常量比"两处都要传对"更不容易 diverge。
-const LogPath = "/var/lib/r1-toolbox/alerts.jsonl"
+// —— 不做成注入字段：单一入口比"两处都要传对"更不容易 diverge。
+//
+// 顶层目录由 R1_DATA_DIR 决定（飞牛 fpk 下是 $TRIM_PKGVAR），默认沿用
+// /var/lib/r1-toolbox，与命令行安装的历史路径一致。
+var LogPath = config.DataFile("alerts.jsonl")
 
 type Sev string
 

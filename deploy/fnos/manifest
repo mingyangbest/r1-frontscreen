@@ -1,0 +1,22 @@
+appname               = r1-frontscreen
+version               = 1.0.0
+display_name          = R1 前置屏
+desc                  = 海康 R1/R1X 前置触摸屏管理：三页信息面板、Web 控制、CPU 与硬盘风扇自动调速、背光与夜间调暗、异常告警与 Bark 推送。仅适用于带 376x960 DSI 前置屏的 HIKSEMI R1/R1X。
+platform              = x86
+source                = thirdparty
+
+maintainer            = mingyang
+maintainer_url        = https://github.com/mingyangbest/r1-frontscreen
+distributor           = mingyang
+
+os_min_version        = 1.2.0
+
+service_port          = 8080
+checkport             = false
+ctl_stop              = true
+
+desktop_uidir         = ui
+desktop_applaunchname = r1-frontscreen.Application
+
+install_type          = root
+changelog             = 首个应用中心版本。界面与功能未变，分发形态改为 fpk：由应用中心托管启停，随包携带 SDL2 运行库与中文字体，安装时校验前置屏与背光、风扇硬件。

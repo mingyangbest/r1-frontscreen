@@ -1,0 +1,110 @@
+#!/bin/bash
+# fpk 生命周期入口。start / stop 幂等，status 返回 0（运行中）或 3（未运行）。
+
+set -u
+
+VAR="${TRIM_PKGVAR:?}"
+ETC="${TRIM_PKGETC:?}"
+APPDEST="${TRIM_APPDEST:?}"
+
+LOG="$VAR/service.log"
+SUP_PID="$VAR/supervisor.pid"
+STOP_FLAG="$VAR/stop.flag"
+HB="$VAR/heartbeat"
+
+alive() {
+  [ -f "$1" ] || return 1
+  pid=$(cat "$1" 2>/dev/null)
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+do_start() {
+  if alive "$SUP_PID"; then
+    return 0
+  fi
+
+  mkdir -p "$VAR/runtime"
+  chmod 700 "$VAR/runtime"
+
+  export SDL_VIDEODRIVER=kmsdrm
+  export XDG_RUNTIME_DIR="$VAR/runtime"
+  export LD_LIBRARY_PATH="$APPDEST/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  export R1_DATA_DIR="$VAR"
+  export R1_FONT_DIR="$APPDEST/share/fonts"
+  export R1_HEARTBEAT_FILE="$HB"
+
+  rm -f "$STOP_FLAG"
+  date +%s > "$HB"
+
+  # 记下起始行号：下面只看本次启动新增的日志，历史崩溃不干扰判断
+  mark=$(wc -l < "$LOG" 2>/dev/null || echo 0)
+
+  nohup "$APPDEST/bin/supervisor.sh" >> "$LOG" 2>&1 &
+  echo $! > "$SUP_PID"
+
+  sleep 3
+
+  if ! alive "$SUP_PID"; then
+    echo "守护进程未能启动，详见 $LOG" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+    return 1
+  fi
+
+  # 守护壳活着不代表服务起来了：worker 秒退崩溃循环时，它同样活着
+  if ! alive "$VAR/worker.pid"; then
+    echo "服务进程未能启动，详见 $LOG" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+    do_stop >/dev/null 2>&1
+    return 1
+  fi
+
+  newlog=$(tail -n +$((mark + 1)) "$LOG" 2>/dev/null)
+
+  # 缺库的典型特征：动态链接器在 main 之前就把进程干掉了
+  if echo "$newlog" | grep -q "error while loading shared libraries"; then
+    echo "启动失败，缺少动态库：$(echo "$newlog" | grep 'error while loading shared libraries' | head -1)" \
+      > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+    do_stop >/dev/null 2>&1
+    return 1
+  fi
+
+  # 本次启动内已经出现过 worker 退出，说明起不来
+  if echo "$newlog" | grep -q "worker 退出 rc="; then
+    echo "服务进程启动后立即退出，详见 $LOG" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+    do_stop >/dev/null 2>&1
+    return 1
+  fi
+
+  return 0
+}
+
+do_stop() {
+  touch "$STOP_FLAG"
+
+  if alive "$SUP_PID"; then
+    kill -TERM "$(cat "$SUP_PID")" 2>/dev/null
+    for _ in $(seq 1 10); do
+      alive "$SUP_PID" || break
+      sleep 1
+    done
+    alive "$SUP_PID" && kill -KILL "$(cat "$SUP_PID")" 2>/dev/null
+  fi
+
+  # 守护壳退出时会带走 worker；这里再兜一次，防止孤儿进程占着 DRM
+  if alive "$VAR/worker.pid"; then
+    kill -TERM "$(cat "$VAR/worker.pid")" 2>/dev/null
+    sleep 1
+    kill -KILL "$(cat "$VAR/worker.pid")" 2>/dev/null
+  fi
+
+  rm -f "$SUP_PID" "$VAR/worker.pid"
+  return 0
+}
+
+case "${1:-}" in
+  start)  do_start  ;;
+  stop)   do_stop   ;;
+  status)
+    if alive "$SUP_PID"; then exit 0; else exit 3; fi
+    ;;
+  *) exit 1 ;;
+esac

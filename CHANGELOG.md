@@ -13,6 +13,47 @@
 
 基于上游 [lemon6515/r1-toolbox-go](https://github.com/lemon6515/r1-toolbox-go) 增强 fork。
 
+## [v1.0.0] - 2026-11-03
+
+第一个面向应用中心的版本。前面十几个版本解决的是「这台机器怎么把屏幕用起来」，
+1.0 解决的是「别人怎么装上」。界面和功能没有变，分发形态从 `install.sh`
+变成了 fpk 应用包。
+
+不走 0.9.9 的原因：P0–P6 路线表已经全部交付、设备上连续稳定运行，0.9.x 的
+使命结束了。应用中心是第一个面向陌生人的分发渠道，这个节点叫 1.0 比叫 beta
+准确，不是营销。
+
+### 新增
+
+- **飞牛 fpk 应用包**（`deploy/fnos/`）：manifest、权限声明、九个生命周期
+  脚本、桌面入口与双套图标。安装后由应用中心托管启停，应用中心能看到运行状态。
+- **守护壳 `supervisor.sh`**：替掉 systemd 的 `Restart=always` + `WatchdogSec`。
+  worker 退出 5 秒后拉起；主循环卡死靠心跳文件判定，60 秒没有心跳就强杀重启。
+- **心跳文件后端**：`internal/watchdog` 在没有 `NOTIFY_SOCKET` 时把心跳写进
+  `$TRIM_PKGVAR/heartbeat`，守护壳盯它的 mtime。systemd 环境行为不变。
+- **安装期硬件门禁**：DSI 前置屏、376x960 分辨率、可写背光节点、it87 系
+  hwmon，四项缺一就中止安装并说明原因，不会装完给一块黑屏。DMI 只记录不拒绝
+  —— R1X 的 `product_name` 没有样本可验证，拿子串匹配 R1 会误杀。
+- **随包依赖**：SDL2、SDL2_ttf 及其依赖闭包打进 `app/lib`，中文字体放进
+  `app/share/fonts`。纯净系统不装任何 apt 包也能跑起来。
+- **背光路径自动探测**：新增 `hardware.DiscoverBrightnessPath()`，配置留空时
+  扫 `/sys/class/backlight/*`。原来靠绝对 PCI 路径，换台机器就静默失效。
+
+### 变更
+
+- 运行数据（历史库、告警日志、网络日历）改由 `R1_DATA_DIR` 决定，
+  默认值仍是 `/var/lib/r1-toolbox`。fpk 形态下落 `$TRIM_PKGVAR`，卸载能清干净。
+- 中文字体搜索把 `R1_FONT_DIR` 排在最前，随包字体优先于系统字体。
+
+### 说明
+
+- 命令行安装方式继续保留，`install.sh` 与 fpk 二选一，**不要同时装**：
+  两个实例会抢同一个 DRM 设备。fpk 安装时会自动停用旧的 systemd 单元，
+  单元文件备份在 `$TRIM_PKGVAR/legacy/`，回退时拷回去即可。
+- 回退前记得把 `@appconf/r1-frontscreen/config.yaml` 同步回
+  `/etc/r1-toolbox/config.yaml`——配置迁移只发生在安装那一刻，之后面板里的
+  改动都只写前者。
+
 ## [v0.9.8] - 2026-11-02
 
 安装脚本的三处修正，都是 v0.9.7 收口时留下的边角。

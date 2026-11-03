@@ -22,6 +22,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
+	"r1-toolbox/internal/config"
 	"r1-toolbox/internal/logx"
 )
 
@@ -29,8 +30,9 @@ import (
 const Retain = 24 * time.Hour
 
 // Path 历史库文件。与告警记录（alerts.LogPath）同目录：都是"程序自己
-// 攒的运行时数据"，清一色放 /var/lib 下，不碰 /etc（配置）与 /tmp（会被清）。
-const Path = "/var/lib/r1-toolbox/history.db"
+// 攒的运行时数据"，默认放 /var/lib 下，不碰 /etc（配置）与 /tmp（会被清）。
+// 顶层目录由 R1_DATA_DIR 决定，飞牛 fpk 下指向 $TRIM_PKGVAR。
+var Path = config.DataFile("history.db")
 
 // Sample 一分钟聚合行。六个物理量各带峰值：
 // CPU/内存/温度/磁盘（最大卷占用%）、网络收/发（MB/s）。

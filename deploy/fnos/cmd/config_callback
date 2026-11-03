@@ -1,0 +1,3 @@
+#!/bin/bash
+# 本应用没有配置向导，配置全部走 Web 面板与 config.yaml 热重载。
+exit 0

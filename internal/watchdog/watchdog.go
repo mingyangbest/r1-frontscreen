@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,13 @@ var (
 	conn     *net.UnixConn
 	interval time.Duration
 )
+
+// heartbeatFile 非 systemd 环境的心跳落盘路径。
+//
+// 飞牛 fpk 下没有 NOTIFY_SOCKET，改由 app/bin/supervisor.sh 盯这个文件的
+// mtime：超过 60 秒没更新就判定主循环卡死并重启 worker。systemd 的
+// WatchdogSec 在这套分发形态里换了个形式存在，语义不变。
+var heartbeatFile = os.Getenv("R1_HEARTBEAT_FILE")
 
 // init 懒初始化：读 NOTIFY_SOCKET 并连上。
 // 非 systemd 环境（开发机、手动跑）下 NOTIFY_SOCKET 为空，全部操作退化为 no-op。
@@ -61,6 +69,12 @@ func init() {
 
 func send(msg string) error {
 	if conn == nil {
+		// 没有 systemd 通知通道时，把心跳落成文件供守护壳读取。
+		// 只处理心跳：READY/STATUS 写文件没有消费者。
+		if heartbeatFile != "" && strings.HasPrefix(msg, "WATCHDOG=1") {
+			ts := strconv.FormatInt(time.Now().Unix(), 10)
+			_ = os.WriteFile(heartbeatFile, []byte(ts), 0o644)
+		}
 		return nil
 	}
 	_, err := conn.Write([]byte(msg))

@@ -1,0 +1,5 @@
+# 构建产物，不进版本库
+app/bin/r1-toolbox
+app/lib/
+app/share/fonts/*.ttc
+*.fpk

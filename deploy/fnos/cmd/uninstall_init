@@ -1,0 +1,5 @@
+#!/bin/bash
+# 卸载前：停服务，避免卸载过程中进程还在写 DRM。
+"${TRIM_APPDEST}/cmd/main" stop >/dev/null 2>&1
+rm -f "${TRIM_PKGVAR}/stop.flag"
+exit 0

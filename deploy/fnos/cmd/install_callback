@@ -1,0 +1,64 @@
+#!/bin/bash
+# 安装后：探测硬件路径、生成配置、停用会抢 DRM 的旧服务。
+
+ETC="${TRIM_PKGETC:?}"
+APPDEST="${TRIM_APPDEST:?}"
+VAR="${TRIM_PKGVAR:?}"
+
+mkdir -p "$ETC" "$VAR"
+
+# 1) 探测背光节点与 hwmon
+brightness=""
+for d in /sys/class/backlight/*/; do
+  if [ -w "${d}brightness" ]; then
+    brightness="/sys/class/backlight/$(basename "$d")/brightness"
+    break
+  fi
+done
+
+hwmon=""
+for d in /sys/class/hwmon/hwmon*/; do
+  n=$(cat "${d}name" 2>/dev/null)
+  case "$n" in
+    it87|it8628|it8613)
+      hwmon="/sys/class/hwmon/$(basename "$d")"
+      break
+      ;;
+  esac
+done
+
+# 2) 生成配置：已存在则保留，绝不覆盖用户调过的值
+if [ ! -f "$ETC/config.yaml" ]; then
+  legacy=""
+  for p in /etc/r1-toolbox/config.yaml /etc/r1-control/config.yaml; do
+    if [ -f "$p" ]; then legacy="$p"; break; fi
+  done
+
+  if [ -n "$legacy" ]; then
+    cp -a "$legacy" "$ETC/config.yaml"
+    echo "已迁移命令行版配置：$legacy"
+  else
+    cp "$APPDEST/config.example.yaml" "$ETC/config.yaml"
+  fi
+fi
+
+# 3) 用实测值覆盖硬件路径（旧配置里的绝对路径可能属于另一台机器）
+if [ -n "$brightness" ]; then
+  sed -i "s|^\([[:space:]]*brightness_path:\).*|\1 $brightness|" "$ETC/config.yaml"
+fi
+if [ -n "$hwmon" ]; then
+  sed -i "s|^\([[:space:]]*hwmon_path:\).*|\1 $hwmon|" "$ETC/config.yaml"
+fi
+
+chmod 600 "$ETC/config.yaml"
+
+# 4) 停用旧的 systemd 单元：两个实例会抢同一个 DRM 设备
+UNIT=/etc/systemd/system/r1-toolbox.service
+if [ -f "$UNIT" ]; then
+  mkdir -p "$VAR/legacy"
+  cp -a "$UNIT" "$VAR/legacy/" 2>/dev/null
+  systemctl disable --now r1-toolbox.service >/dev/null 2>&1
+  echo "已停用命令行版 r1-toolbox.service，单元文件备份在 $VAR/legacy/"
+fi
+
+exit 0
