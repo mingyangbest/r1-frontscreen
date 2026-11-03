@@ -5,7 +5,19 @@
 # （APPDEST 只对应包里的 app/ 目录）。拼 $TRIM_APPDEST/cmd/main 会 exit 127，
 # 服务根本停不下来。用脚本自身位置定位。
 CMD_DIR="$(cd "$(dirname "$0")" && pwd)"
+LOG="${TRIM_PKGVAR:-/tmp}/service.log"
 
-"$CMD_DIR/main" stop >/dev/null 2>&1
+if ! "$CMD_DIR/main" stop >> "$LOG" 2>&1; then
+  echo "$(date '+%F %T') [uninstall_init] main stop 返回非 0，服务可能未停止" >> "$LOG"
+fi
+
+# main stop 无论成败都返回 0，只看退出码查不出问题 —— 真正的判据是进程没了
+if [ -r "${TRIM_PKGVAR}/worker.pid" ]; then
+  pid=$(cat "${TRIM_PKGVAR}/worker.pid" 2>/dev/null)
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    echo "$(date '+%F %T') [uninstall_init] 停止后 worker($pid) 仍存活，卸载可能不干净" >> "$LOG"
+  fi
+fi
+
 rm -f "${TRIM_PKGVAR}/stop.flag"
 exit 0
