@@ -7,11 +7,22 @@ HERE="$(pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 VERSION="${VERSION:-$(grep '^version' manifest | awk -F= '{print $2}' | tr -d ' ')}"
 
+# 编译需要 SDL2 开发文件。标准安装走 pkg-config 默认路径；
+# 系统 libgbm 版本冲突装不上时，用仓库外的私有解包（~/sdlroot 或 /opt/sdl2dev）。
+if ! pkg-config --exists sdl2 2>/dev/null; then
+  for d in "$HOME/sdlroot" /opt/sdl2dev; do
+    pc="$d/usr/lib/x86_64-linux-gnu/pkgconfig"
+    if [ -d "$pc" ]; then
+      export PKG_CONFIG_PATH="$pc${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+      break
+    fi
+  done
+fi
+
 if ! pkg-config --exists sdl2 2>/dev/null; then
   echo "缺少 SDL2 开发文件。两种办法："
   echo "  1) 标准安装：sudo apt-get install libsdl2-dev libsdl2-ttf-dev"
-  echo "  2) 系统 libgbm 版本冲突装不上时，私有解包后用："
-  echo "     export PKG_CONFIG_PATH=/path/to/sdlroot/usr/lib/x86_64-linux-gnu/pkgconfig"
+  echo "  2) 系统 libgbm 版本冲突时，私有解包到 ~/sdlroot（见实施方案 §7.1）"
   exit 1
 fi
 
