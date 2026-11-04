@@ -348,7 +348,34 @@ func readLabel(device string) string {
 	if err != nil {
 		return ""
 	}
-	return firstLine(out)
+	return unescapeLabel(firstLine(out))
+}
+
+// unescapeLabel 还原 lsblk 对非 ASCII 卷标的转义。
+//
+// lsblk 输出 LABEL 时会把非 ASCII 字节写成字面 \xNN（防止终端注入），
+// 于是「媒体库」变成 \xe5\xaa\x92\xe4\xbd\x93\xe5\xba\x93。屏上横幅和面板
+// 存储卡都直接显示这个字符串，用户看到的是一串反斜杠。
+//
+// blkid 虽然输出原文，但读块设备要 root，而应用现在以非特权用户运行，
+// 只能继续用 lsblk 再自己还原。含 \x 才处理，纯 ASCII 卷标原样返回。
+func unescapeLabel(s string) string {
+	if !strings.Contains(s, `\x`) {
+		return s
+	}
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); {
+		if i+3 < len(s) && s[i] == '\\' && s[i+1] == 'x' {
+			if v, err := strconv.ParseUint(s[i+2:i+4], 16, 8); err == nil {
+				out = append(out, byte(v))
+				i += 4
+				continue
+			}
+		}
+		out = append(out, s[i])
+		i++
+	}
+	return string(out)
 }
 
 // volumeName 展示名：真实卷标 > 系统盘语义名 > 挂载点末段

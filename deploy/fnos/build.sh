@@ -31,7 +31,7 @@ echo "==> 编译 v$VERSION"
 cd "$ROOT"
 CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
 go build -mod=vendor -trimpath \
-  -ldflags "-s -w -X main.version=v$VERSION -X main.commit=$(git rev-parse --short HEAD 2>/dev/null || echo dev)" \
+  -ldflags "-s -w -X main.version=v$VERSION -X main.commit=${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo dev)}" \
   -o "$HERE/app/bin/r1-toolbox" ./cmd
 cd "$HERE"
 

@@ -1,5 +1,5 @@
 appname               = r1-frontscreen
-version               = 1.0.0
+version               = 1.0.1
 display_name          = R1 前置屏
 desc                  = 海康 R1/R1X 前置触摸屏管理：三页信息面板、Web 控制、CPU 与硬盘风扇自动调速、背光与夜间调暗、异常告警与 Bark 推送。仅适用于带 376x960 DSI 前置屏的 HIKSEMI R1/R1X。
 platform              = x86
@@ -18,4 +18,4 @@ ctl_stop              = true
 desktop_uidir         = ui
 desktop_applaunchname = r1-frontscreen.Application
 
-changelog             = 首个应用中心版本。界面与功能未变，分发形态改为 fpk：由应用中心托管启停，随包携带 SDL2 运行库与中文字体，安装时校验前置屏与背光、风扇硬件。应用以非特权用户运行，背光与风扇的 sysfs 写权限由安装时的 udev 规则授予。
+changelog             = 1.0.1：修复面板鉴权可被伪造 X-Forwarded-For 绕过、补服务端读写超时与 1MB 请求体上限、磁盘扫描同一时间只允许一次；温度源失联改为沿用上次有效读数，超过 15 秒才升档并在屏幕上提示，恢复后自动消失。
