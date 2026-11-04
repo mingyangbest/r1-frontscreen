@@ -6,6 +6,8 @@ package web
 //   3. 连续失败 8 次锁 IP 5 分钟
 
 import (
+	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -147,6 +149,54 @@ func TestAuthGuardLocksRequests(t *testing.T) {
 	s.router.ServeHTTP(w, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("锁定期内对令牌也应 401，got %d", w.Code)
+	}
+}
+
+// TestForwardedForCannotBypassLockout 伪造 X-Forwarded-For 不能绕过 IP 锁定。
+//
+// gin 默认 ForwardedByClientIP=true 且信任所有代理，c.ClientIP() 会采信这个头。
+// 不关掉的话，每次请求换一个假 IP 就能无限试令牌，"8 次锁 5 分钟"形同虚设。
+// 这里让每次请求带不同的假 XFF，但 RemoteAddr 固定，锁定必须按 RemoteAddr 生效。
+func TestForwardedForCannotBypassLockout(t *testing.T) {
+	s, _ := newTestServer(t, "GOODTOKEN")
+
+	send := func(token, fakeIP string) int {
+		req := httptest.NewRequest("GET", "/api/status", nil)
+		req.RemoteAddr = "192.0.2.9:4321"
+		req.Header.Set("X-Token", token)
+		req.Header.Set("X-Forwarded-For", fakeIP)
+		w := httptest.NewRecorder()
+		s.router.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	for i := 0; i < authMaxFails; i++ {
+		if code := send("WRONG", fmt.Sprintf("198.51.100.%d", i)); code != http.StatusUnauthorized {
+			t.Fatalf("错令牌应 401，got %d", code)
+		}
+	}
+	// 换一个假 XFF + 正确令牌：按旧行为会以新 IP 重试成功，现在必须仍被锁
+	if code := send("GOODTOKEN", "203.0.113.77"); code != http.StatusUnauthorized {
+		t.Fatalf("伪造 X-Forwarded-For 绕过了锁定，got %d", code)
+	}
+}
+
+// TestBodyLimitRejectsOversize 请求体超过上限要拒绝，而不是读进内存再说。
+func TestBodyLimitRejectsOversize(t *testing.T) {
+	s, _ := newTestServer(t, "GOODTOKEN")
+
+	big := bytes.Repeat([]byte("a"), 2<<20) // 2 MB
+	req := httptest.NewRequest("POST", "/api/display", bytes.NewReader(big))
+	req.RemoteAddr = "192.0.2.9:4321"
+	req.Header.Set("X-Token", "GOODTOKEN")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	// MaxBytesReader 让 BindJSON 读到错误 → handler 返回 400；
+	// 有的版本会先命中 413，两种都算拒绝。
+	if w.Code != http.StatusBadRequest && w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("2MB 请求体应被拒，got %d", w.Code)
 	}
 }
 

@@ -3,6 +3,7 @@ package web
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,6 +49,21 @@ type Server struct {
 	// 为 nil 时 /api/preview 返回 501 —— 预览依赖屏幕在跑，纯 headless
 	// 场景（Docker 容器运行）给不了。
 	Preview func(page string) ([]byte, error)
+
+	// scanMu 保证磁盘扫描同时只跑一份。du/find 是几十秒到三分钟的同步
+	// 长任务，没有互斥时连点几次就有几个进程在扫同一块盘，机械盘会被拖死。
+	scanMu sync.Mutex
+}
+
+// bodyLimit 限制请求体大小。超限时 MaxBytesReader 会让后续读取返回错误，
+// BindJSON 自然收到 400，不需要额外的判断分支。
+func bodyLimit(max int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, max)
+		}
+		c.Next()
+	}
 }
 
 // NewServer 组装 Web 面板。
@@ -64,7 +80,19 @@ func NewServer(mon *monitor.SystemMonitor, fan *hardware.FanController, rgb *har
 	// 不用 gin.Default()：它的访问日志会把完整 URL（含 query）写进 journal，
 	// 而面板令牌过去允许 ?token= 传递 —— 等于把令牌抄进日志。改用自建中间件。
 	router := gin.New()
+
+	// 不信任任何反向代理。gin 默认 ForwardedByClientIP=true 且信任 0.0.0.0/0，
+	// 也就是 c.ClientIP() 会原样采信请求里的 X-Forwarded-For —— 伪造这个头
+	// 就能绕开按 IP 的失败计数（8 次锁 5 分钟形同虚设）。
+	// 传 nil 后 ClientIP() 退回 RemoteAddr；将来真要放到反代后面，
+	// 应该在配置里列可信代理网段，而不是把这里改回默认值。
+	if err := router.SetTrustedProxies(nil); err != nil {
+		logx.Printf("【面板】关闭代理信任失败: %v", err)
+	}
 	router.Use(gin.Recovery())
+	// 请求体上限：面板所有接口都是小 JSON，1 MB 足够。没有上限时
+	// 一个超大 body 就能让 BindJSON 把内存吃满。
+	router.Use(bodyLimit(1 << 20))
 
 	s := &Server{
 		router:     router,
@@ -135,7 +163,20 @@ func (s *Server) setupRoutes() {
 }
 
 func (s *Server) Run(addr string) error {
-	return s.router.Run(addr)
+	// 以前直接用 router.Run，等于 http.ListenAndServe：读超时、写超时、
+	// 空闲超时全是 0（不限），慢连接可以一直占着 goroutine。
+	//
+	// WriteTimeout 给到 250 秒是因为 /api/disk/scan 同步跑 du(90s)+find(120s)，
+	// 最坏 210 秒。其他接口都是毫秒级，用不到这个上限。
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           s.router,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      250 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	return srv.ListenAndServe()
 }
 
 // ------------------------------------------------------------
@@ -393,6 +434,14 @@ func (s *Server) handleDiskScan(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "未知挂载点（只允许已挂载的卷）"})
 		return
 	}
+
+	// 同一时间只允许一次扫描。连着点几下不该变成几个 du 在抢同一块盘。
+	if !s.scanMu.TryLock() {
+		c.JSON(409, gin.H{"error": "已有扫描在进行中，等它结束再试"})
+		return
+	}
+	defer s.scanMu.Unlock()
+
 	c.JSON(200, diskusage.Scan(req.Mount))
 }
 
