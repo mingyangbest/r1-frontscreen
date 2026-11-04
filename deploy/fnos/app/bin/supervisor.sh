@@ -31,6 +31,10 @@ trap cleanup TERM INT
 
 log "守护启动 pid=$$"
 
+# 自己写 pid：调用方用 runuser 起本脚本，$! 拿到的是 runuser 的 pid，
+# 不是守护壳的，杀 runuser 会留下孤儿 worker。
+echo $$ > "$VAR/supervisor.pid" 2>/dev/null
+
 while [ ! -f "$STOP_FLAG" ]; do
   "$BIN" >> "$LOG" 2>&1 &
   child=$!

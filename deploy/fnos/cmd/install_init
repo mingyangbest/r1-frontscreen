@@ -23,12 +23,16 @@ for f in "$SYS"/sys/class/drm/card*-DSI-1/modes; do
 done
 [ "$found" = "1" ] || fail "未检测到 376x960 的 DSI 前置屏。本应用依赖这块屏工作，安装已中止，系统未做任何修改。"
 
-# 2) 背光：必须存在可写节点
+# 2) 背光：节点存在即可
+#
+# 不判 -w：安装脚本以 root 运行，root 对 0644 的 sysfs 节点同样返回"可写"，
+# 这个判定永远为真、没有信息量。应用运行在非特权用户下，真正的可写性由
+# install_callback 的 udev 规则授予，装完会复查一次。
 bl=""
 for d in "$SYS"/sys/class/backlight/*/; do
-  [ -w "${d}brightness" ] && { bl="${d}brightness"; break; }
+  [ -e "${d}brightness" ] && { bl="${d}brightness"; break; }
 done
-[ -n "$bl" ] || fail "未找到可写的背光节点。本应用需要控制背光，安装已中止。"
+[ -n "$bl" ] || fail "未找到背光节点。本应用需要控制背光，安装已中止。"
 
 # 3) 风扇：it87 系 hwmon 是 PWM 调速的前提
 fan=0

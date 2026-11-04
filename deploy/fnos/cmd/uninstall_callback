@@ -5,4 +5,9 @@ rm -f "${TRIM_PKGVAR}/supervisor.pid" \
       "${TRIM_PKGVAR}/stop.flag" \
       "${TRIM_PKGVAR}/heartbeat"
 rm -rf "${TRIM_PKGVAR}/runtime"
+
+# 移除 udev 规则：卸载后不该继续改变系统权限
+rm -f /etc/udev/rules.d/99-r1-frontscreen.rules
+udevadm control --reload-rules 2>/dev/null
+
 exit 0

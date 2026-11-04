@@ -18,5 +18,4 @@ ctl_stop              = true
 desktop_uidir         = ui
 desktop_applaunchname = r1-frontscreen.Application
 
-install_type          = root
-changelog             = 首个应用中心版本。界面与功能未变，分发形态改为 fpk：由应用中心托管启停，随包携带 SDL2 运行库与中文字体，安装时校验前置屏与背光、风扇硬件。
+changelog             = 首个应用中心版本。界面与功能未变，分发形态改为 fpk：由应用中心托管启停，随包携带 SDL2 运行库与中文字体，安装时校验前置屏与背光、风扇硬件。应用以非特权用户运行，背光与风扇的 sysfs 写权限由安装时的 udev 规则授予。

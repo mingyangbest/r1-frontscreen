@@ -1,5 +1,8 @@
 {
   "defaults": {
     "run-as": "root"
-  }
+  },
+  "username": "r1-frontscreen",
+  "groupname": "r1-frontscreen",
+  "join-groups": ["video", "docker"]
 }

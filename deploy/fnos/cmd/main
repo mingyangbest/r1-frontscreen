@@ -24,11 +24,17 @@ do_start() {
     return 0
   fi
 
-  mkdir -p "$VAR/runtime"
+  APP_USER="${TRIM_USERNAME:-r1-frontscreen}"
+  APP_GROUP="${TRIM_GROUPNAME:-$APP_USER}"
+
+  mkdir -p "$VAR/runtime" "$VAR/cache"
   chmod 700 "$VAR/runtime"
 
   export SDL_VIDEODRIVER=kmsdrm
   export XDG_RUNTIME_DIR="$VAR/runtime"
+  # SDL 的 shader cache 默认写 $HOME/.cache，包用户没有可写的家目录，
+  # 不指定就会在日志里刷 "Failed to create ... for shader cache"
+  export XDG_CACHE_HOME="$VAR/cache"
   export LD_LIBRARY_PATH="$APPDEST/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   export R1_DATA_DIR="$VAR"
   export R1_FONT_DIR="$APPDEST/share/fonts"
@@ -37,11 +43,18 @@ do_start() {
   rm -f "$STOP_FLAG"
   date +%s > "$HB"
 
+  # 生命周期脚本是 root（要用 udev、改用户组），长期进程必须降权：
+  # 官方建议「在启动用户可访问服务前降权」。日志与运行目录先交给包用户，
+  # 否则 runuser 起来的进程写不进去。
+  touch "$LOG" 2>/dev/null
+  chown "$APP_USER:$APP_GROUP" "$LOG" "$HB" 2>/dev/null
+  chown -R "$APP_USER:$APP_GROUP" "$VAR" 2>/dev/null
+
   # 记下起始行号：下面只看本次启动新增的日志，历史崩溃不干扰判断
   mark=$(wc -l < "$LOG" 2>/dev/null || echo 0)
 
-  nohup "$APPDEST/bin/supervisor.sh" >> "$LOG" 2>&1 &
-  echo $! > "$SUP_PID"
+  # runuser 切身份，环境变量照常传递；supervisor 会把自己的 pid 写进 SUP_PID
+  nohup runuser -u "$APP_USER" -- "$APPDEST/bin/supervisor.sh" >> "$LOG" 2>&1 &
 
   sleep 3
 

@@ -85,4 +85,51 @@ if [ -f "$UNIT" ]; then
   echo "已停用命令行版 r1-toolbox.service，单元文件备份在 $VAR/legacy/"
 fi
 
+# 6) 非 root 运行所需的权限
+#
+# 应用以 package 用户（r1-frontscreen）运行，但需要 root 才拿得到的资源有四个：
+#   /dev/dri/card1            root:video 660  → 加 video 组
+#   /var/run/docker.sock      root:docker 660 → 加 docker 组
+#   /sys/class/backlight/*    root:root 644   → udev 给 video 组写权限
+#   /sys/class/hwmon/*/pwm*   root:root 644   → 同上
+# 安装脚本以 root 执行，正好在这里一次性补齐。
+APP_USER="r1-frontscreen"
+if id "$APP_USER" >/dev/null 2>&1; then
+  usermod -aG video,docker "$APP_USER" 2>/dev/null
+fi
+
+RULES=/etc/udev/rules.d/99-r1-frontscreen.rules
+cat > "$RULES" <<'UDEV'
+# R1 前置屏：背光与风扇 PWM 对 video 组开放写权限，应用以非特权用户运行
+SUBSYSTEM=="backlight", ACTION=="add", RUN+="/bin/sh -c 'chgrp video /sys/class/backlight/%k/brightness 2>/dev/null; chmod 0660 /sys/class/backlight/%k/brightness 2>/dev/null'"
+SUBSYSTEM=="hwmon", ACTION=="add", RUN+="/bin/sh -c 'chgrp video /sys/class/hwmon/%k/pwm* 2>/dev/null; chmod 0660 /sys/class/hwmon/%k/pwm* 2>/dev/null'"
+UDEV
+udevadm control --reload-rules 2>/dev/null
+
+# 已存在的节点立即生效，不必等重启
+for f in /sys/class/backlight/*/brightness; do
+  [ -e "$f" ] || continue
+  chgrp video "$f" 2>/dev/null
+  chmod 0660 "$f" 2>/dev/null
+done
+for d in /sys/class/hwmon/hwmon*/; do
+  case "$(cat "${d}name" 2>/dev/null)" in
+    it87|it8628|it8613)
+      chgrp video "${d}"pwm* 2>/dev/null
+      chmod 0660 "${d}"pwm* 2>/dev/null
+      ;;
+  esac
+done
+
+# 复查：权限没落到位要留痕，功能会静默降级（亮度调不动、风扇不跟温度）
+if id "$APP_USER" >/dev/null 2>&1; then
+  for f in /sys/class/backlight/*/brightness; do
+    [ -e "$f" ] || continue
+    if ! sudo -u "$APP_USER" test -w "$f" 2>/dev/null; then
+      echo "警告：$f 对 $APP_USER 不可写，亮度调节可能失效" >&2
+    fi
+    break
+  done
+fi
+
 exit 0
