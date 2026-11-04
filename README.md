@@ -4,7 +4,7 @@
 
 **能装的机器只有海康 R1 / R1X**（Intel N100）。程序用 KMS/DRM 直接画在机器内置的那块 376×960 小屏上，背光和风扇读的也是这台机器自己的节点。普通电脑、群晖、威联通装了也点不亮，因为它们没有这块屏。
 
-还需要能 SSH 进 fnOS（或 Debian 系）并拿到 `sudo`。三条都满足，直接看 [部署方式](#部署方式)，一条命令装完，不用装 Go，也不用编译。
+装法有两条：走飞牛应用中心（或下载 fpk 手动装）不用碰命令行；走 `install.sh` 才需要 SSH 和 `sudo`。机型对得上就直接看 [部署方式](#部署方式)，不用装 Go，也不用编译。
 
 > 本项目基于 [lemon6515/r1-toolbox-go](https://github.com/lemon6515/r1-toolbox-go) 增强 fork，遵循上游 **GPL-3.0 + Commons Clause** 许可证，感谢上游作者的开源工作。
 
@@ -80,12 +80,38 @@
 
 ## 部署方式
 
-> **三条硬前提**：海康 R1 / R1X、fnOS 或 Debian 系、能 SSH 并拿到 `sudo`。不满足的话，装完只会得到一个跑起来但点不亮屏幕的进程。
+> **两个硬前提**：海康 R1 / R1X、fnOS 或 Debian 系。不满足的话，装完只会得到一个跑起来但点不亮屏幕的进程。
 
-### 🚀 第一次装？按这个顺序来
+### 方式 A：fpk 应用包（最省事，不用命令行）
+
+去 [Releases](https://github.com/mingyangbest/r1-frontscreen/releases) 下载 `r1-frontscreen-1.0.1.fpk`，在飞牛应用中心的「手动安装」里选中它。SDL2 运行库和中文字体都打在包里，纯净系统也能装。
+
+> 应用中心正在审核，上架后可以直接搜「R1 前置屏」安装。审核期间手动装，效果一样。
+
+装完应用以 `r1-frontscreen` 用户运行，屏幕自动点亮，面板在 `http://<设备IP>:8080`。卸载在应用中心里点，应用目录和 udev 规则会清掉，配置文件保留，重装后沿用。
+
+<details>
+<summary>想自己打包？</summary>
+
+```bash
+cd deploy/fnos
+VERSION=1.0.1 COMMIT=$(git rev-parse --short HEAD) ./build.sh
+```
+
+需要飞牛官方 `fnpack` 和 SDL2 开发文件。脚本会收集依赖库和字体，`fnpack build` 出包，约 17 MB。
+
+> 应用中心不接受同版本覆盖：改了内容要先改 `deploy/fnos/manifest` 里的 `version` 再打包，否则装上去的还是旧包。
+
+</details>
+
+### 方式 B：install.sh（需要 SSH）
+
+没有应用中心，或者想用 systemd 自己管的时候走这条。
+
+#### 🚀 第一次装？按这个顺序来
 
 > [!IMPORTANT]
-> 第一次接触这个项目，不用先读完整篇 README，按下面 5 步走就行，细节在下面的方式 A 里。
+> 第一次接触这个项目，不用先读完整篇 README，按下面 5 步走就行，细节在后面的「一行装完」里。
 
 1. 确认机器：海康 R1 / R1X，系统是 fnOS 或 Debian 系。不是这台机器就先停，装完屏幕也点不亮。
 2. 找到 NAS 的局域网 IP，在电脑终端里 SSH 登录（fnOS 需要先开启 SSH 服务）：
@@ -109,7 +135,7 @@
 > [!WARNING]
 > 面板是明文 HTTP，只在内网用，不要映射到公网。以后升级重跑一次安装脚本就行，配置不会被覆盖。
 
-### 方式 A：一条命令（推荐）
+#### 一行装完（或只想升级）
 
 ```bash
 git clone https://github.com/mingyangbest/r1-frontscreen.git
@@ -167,7 +193,7 @@ sudo journalctl -u r1-toolbox -f      # 看日志
 
 </details>
 
-### 方式 B：从源码编译（改代码 / ARM 主板）
+### 方式 C：从源码编译（改代码 / ARM 主板）
 
 ```bash
 sudo ./install.sh --from-source
@@ -179,7 +205,7 @@ sudo ./install.sh --from-source
 docker compose run --rm build      # 产物落在 ./build/r1-toolbox
 ```
 
-### 方式 C：Docker 容器运行（实验性）
+### 方式 D：Docker 容器运行（实验性）
 
 屏幕渲染需要特权设备访问，容器方式仅作尝试，不保证在所有固件上可用：
 
@@ -187,22 +213,7 @@ docker compose run --rm build      # 产物落在 ./build/r1-toolbox
 docker compose up -d screen   # privileged + /dev/fb0 + host 网络
 ```
 
-遇到问题请回退方式 A。
-
-### 方式 D：fpk 应用包（飞牛应用中心）
-
-不用碰命令行：从 [Releases](https://github.com/mingyangbest/r1-frontscreen/releases) 下载 `r1-frontscreen-1.0.1.fpk`，在飞牛应用中心手动安装。包是自带的，SDL2 运行库和中文字体都在里面，纯净系统也能装。
-
-也可以自己打包，配置在 `deploy/fnos/`：
-
-```bash
-cd deploy/fnos
-VERSION=1.0.1 COMMIT=$(git rev-parse --short HEAD) ./build.sh
-```
-
-需要飞牛官方 `fnpack` 和 SDL2 开发文件。脚本会收集依赖库、字体，最后用 `fnpack build` 出包，产物约 17 MB。
-
-> 应用中心不接受同版本覆盖：改了内容要先改 `deploy/fnos/manifest` 里的 `version` 再打包，否则装上去的还是旧包。
+遇到问题请回退方式 B。
 
 ## Web 控制面板
 
