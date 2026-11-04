@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -95,6 +96,10 @@ type Inputs struct {
 
 	FanRPM   [2]int // [CPU, 机箱]，按 PWM 映射的那两路
 	FanWasOn [2]bool
+
+	// FanSensorStale 温度源失联超过 15 秒，元素是人话名字（"CPU" / "机箱"）。
+	// 失联时风扇已经升到中高档，这条用于让用户知道「转速高不是坏了」。
+	FanSensorStale []string
 
 	NetOK bool // 引擎外部探测（连续失败计数在引擎内做防抖）
 }
@@ -261,6 +266,13 @@ func (e *Engine) Evaluate(in Inputs) {
 
 	if !in.NetOK {
 		cands = append(cands, cand{"net", SevWarn, "公网连接失败"})
+	}
+
+	// 温度源失联：不是降温的借口，是「传感器这条线断了」。
+	// 风扇那边已经抬到中高档，这里只负责让用户知道为什么突然变吵。
+	if len(in.FanSensorStale) > 0 {
+		cands = append(cands, cand{"fansensor", SevWarn,
+			"温度源失联 · " + strings.Join(in.FanSensorStale, "、") + "，风扇已升档"})
 	}
 
 	// ---- 状态机：越界 strike++，达到防抖次数才算触发 ----

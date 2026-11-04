@@ -327,6 +327,7 @@ func main() {
 			SMARTDetail:    smartDetail,
 			DockerAbnormal: snap.Docker.ContainersAbnormal,
 			FanRPM:         [2]int{cpuRPM, hddRPM},
+			FanSensorStale: fanCtrl.StaleSensorNames(),
 			NetOK:          netProbe.reachable(),
 		}
 	})

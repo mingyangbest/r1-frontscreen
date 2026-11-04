@@ -12,12 +12,31 @@ import (
 	"r1-toolbox/internal/logx"
 )
 
-// tempFallback 传感器读不到时**仅供调速**使用的保守值。
+// tempFallback 传感器读不到、且没有任何历史读数时**仅供调速**使用的保守值。
 //
 // 它绝不会出现在界面上：界面走 GetTemp 的 ok=false 显示「—」。
 // 旧实现把这个 30 当成真实读数返回，于是温度读数失败时屏上赫然写着
 // 「30°C」，而实际上一个传感器都没读到 —— 这是明确的编数据。
 const tempFallback = 30.0
+
+const (
+	// tempStaleAfter 多久没有新的有效读数就算「失联」。
+	// 取 15 秒是因为 hwmon 偶发单次读失败很常见（盘休眠唤醒、驱动瞬断），
+	// 立刻升档会让风扇在正常运行时反复狂转，最后逼人关掉自动调速。
+	tempStaleAfter = 15 * time.Second
+
+	// tempStaleSpeed 失联后自动模式的占空比下限。
+	// 200/255 约 78%：明显高于常态，但不是满转 —— 真故障时吵一点可以接受，
+	// 满转反而会让用户以为程序出错了。
+	tempStaleSpeed = 200
+)
+
+// lastReading 某一路温度源最后一次读成功的时间和读数。
+// 按传感器名各存一份：CPU 和机箱是两条独立的曲线，共用会互相污染。
+type lastReading struct {
+	temp float64
+	at   time.Time
+}
 
 type FanController struct {
 	it8628Path   string
@@ -57,6 +76,16 @@ type FanController struct {
 	speedMu      sync.Mutex
 	lastCPUSpeed int
 	lastHDDSpeed int
+
+	// 温度源失联兜底。lastTemp 按传感器名各存一份最后有效读数，
+	// 15 秒内沿用，超过才升档 —— 单次读失败不该让风扇狂转。
+	tempMu   sync.Mutex
+	lastTemp map[string]lastReading
+
+	// cpuStale/hddStale 由 tick 更新，告警协程通过 StaleSensorNames 读取。
+	// 用 mu 保护（和曲线参数同一把锁，读的都是「调速状态」）。
+	cpuStale bool
+	hddStale bool
 }
 
 func NewFanController() *FanController {
@@ -351,12 +380,61 @@ func (f *FanController) GetTemp(sensor string) (float64, bool) {
 	return 0, false
 }
 
-// TempForControl 供调速使用：读不到时返回保守值，绝不返回 0（会让风扇停）
+// TempForControl 供调速使用：读不到时返回保守值，绝不返回 0（会让风扇停）。
+//
+// 这是对外兼容的入口，内部走 tempForControl；失联升档由 tick 负责，
+// 单看返回值区分不出「沿用了旧值」和「真的失联」。
 func (f *FanController) TempForControl(sensor string) float64 {
+	v, _ := f.tempForControl(sensor)
+	return v
+}
+
+// tempForControl 返回用于调速的温度，以及这一路是否已失联（超过 15 秒没有
+// 有效读数，或者从来没读到过）。
+//
+// 三段语义：
+//  1. 这次读成功 —— 记下读数与时间，返回它；
+//  2. 读失败但 15 秒内有成功过 —— 沿用上次读数，不升档；
+//  3. 读失败且超过 15 秒（或从未成功）—— 返回兜底值并置 stale，
+//     由 tick 把转速抬到 tempStaleSpeed。
+//
+// 第 3 段故意不回写 lastTemp：否则失联期间会把 30°C 当成「最后有效读数」，
+// 下一次抖动又从 30°C 起算，等于兜底值慢慢变成了真实温度。
+func (f *FanController) tempForControl(sensor string) (float64, bool) {
 	if v, ok := f.GetTemp(sensor); ok {
-		return v
+		f.tempMu.Lock()
+		if f.lastTemp == nil {
+			f.lastTemp = make(map[string]lastReading)
+		}
+		f.lastTemp[sensor] = lastReading{temp: v, at: time.Now()}
+		f.tempMu.Unlock()
+		return v, false
 	}
-	return tempFallback
+
+	f.tempMu.Lock()
+	last, has := f.lastTemp[sensor]
+	f.tempMu.Unlock()
+	if has && time.Since(last.at) <= tempStaleAfter {
+		return last.temp, false
+	}
+	return tempFallback, true
+}
+
+// StaleSensorNames 返回当前失联的温度源（给主循环喂告警用）。
+//
+// FanController 不直接推横幅：横幅归告警引擎管，否则同一条故障会出现
+// 两个来源、两个消失时机。
+func (f *FanController) StaleSensorNames() []string {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	var out []string
+	if f.cpuStale {
+		out = append(out, "CPU")
+	}
+	if f.hddStale {
+		out = append(out, "机箱")
+	}
+	return out
 }
 
 func (f *FanController) getCoretempPackage() (float64, bool) {
@@ -467,25 +545,39 @@ func (f *FanController) tick() {
 	hddSrc := f.hddTempSource
 	f.mu.RUnlock()
 
-	cpuTemp := f.TempForControl(cpuSensor)
+	cpuTemp, cpuStale := f.tempForControl(cpuSensor)
 
 	// 机箱风扇被控量 = 真实盘体温度（多盘取最高），取不到才回退主板传感器
 	hddTemp := 0.0
+	hddStale := false
 	if hddSrc != nil {
 		hddTemp = hddSrc()
 	}
 	if hddTemp <= 0 {
-		hddTemp = f.TempForControl(hddSensor)
+		hddTemp, hddStale = f.tempForControl(hddSensor)
 	}
 
 	cpuSpeed := fixedSpeed(cpuMode)
 	if cpuMode == "auto" {
 		cpuSpeed = f.CalculateSpeed(cpuTemp, cpuMin, cpuMax, 50, 255)
+		// 温度源失联时抬到中高档：不知道温度就别按「凉」处理。
+		if cpuStale {
+			cpuSpeed = max(cpuSpeed, tempStaleSpeed)
+		}
 	}
 	hddSpeed := fixedSpeed(hddMode)
 	if hddMode == "auto" {
 		hddSpeed = f.CalculateSpeed(hddTemp, hddMin, hddMax, 50, 255)
+		if hddStale {
+			hddSpeed = max(hddSpeed, tempStaleSpeed)
+		}
 	}
+
+	// 交给告警协程读。手动模式下也照实记录：温度读不到这件事
+	// 和「用户指定了多少转速」无关，该报还是要报。
+	f.mu.Lock()
+	f.cpuStale, f.hddStale = cpuStale, hddStale
+	f.mu.Unlock()
 
 	f.SetCPUSpeed(cpuSpeed)
 	f.SetHDDSpeed(hddSpeed)

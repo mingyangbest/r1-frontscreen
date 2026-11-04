@@ -15,6 +15,7 @@ package hardware
 import (
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestFanConcurrentSettings 模拟「Web 面板改设置 + 调速循环每秒读快照」
@@ -113,5 +114,68 @@ func TestGetTempNoFabrication(t *testing.T) {
 	}
 	if v := f.TempForControl("coretemp:Package id 0"); v != tempFallback {
 		t.Fatalf("调速兜底值应为 %.0f，got %v", tempFallback, v)
+	}
+}
+
+// TestTempStaleFallback 温度源失联的三段语义：
+// 15 秒内沿用上次有效读数，超过才判失联，且失联分支不覆盖上次读数。
+func TestTempStaleFallback(t *testing.T) {
+	f := &FanController{}
+	const sensor = "nope:temp1"
+
+	// 从未读到过 → 直接失联
+	if v, stale := f.tempForControl(sensor); !stale || v != tempFallback {
+		t.Fatalf("从未读到过应判失联，got (%v, %v)", v, stale)
+	}
+
+	// 5 秒前有有效读数 → 沿用，不算失联
+	f.lastTemp = map[string]lastReading{
+		sensor: {temp: 62, at: time.Now().Add(-5 * time.Second)},
+	}
+	if v, stale := f.tempForControl(sensor); stale || v != 62 {
+		t.Fatalf("15 秒内应沿用旧值 62，got (%v, %v)", v, stale)
+	}
+
+	// 20 秒前 → 失联，返回兜底值
+	f.lastTemp[sensor] = lastReading{temp: 62, at: time.Now().Add(-20 * time.Second)}
+	if v, stale := f.tempForControl(sensor); !stale || v != tempFallback {
+		t.Fatalf("超过 15 秒应判失联，got (%v, %v)", v, stale)
+	}
+
+	// 关键：失联分支不能回写兜底值，否则下一轮抖动会从 30°C 起算
+	if got := f.lastTemp[sensor].temp; got != 62 {
+		t.Fatalf("失联不应改写上次有效读数，got %v", got)
+	}
+}
+
+// TestTempSourcesIndependent CPU 与机箱各存各的最后读数，不能共用一份。
+// 共用会让「机箱掉线」把 CPU 的正常读数覆盖掉，反之亦然。
+func TestTempSourcesIndependent(t *testing.T) {
+	f := &FanController{lastTemp: map[string]lastReading{
+		"cpu:temp1": {temp: 55, at: time.Now()},
+		"hdd:temp1": {temp: 38, at: time.Now().Add(-30 * time.Second)},
+	}}
+
+	if v, stale := f.tempForControl("cpu:temp1"); stale || v != 55 {
+		t.Fatalf("CPU 应沿用 55，got (%v, %v)", v, stale)
+	}
+	if _, stale := f.tempForControl("hdd:temp1"); !stale {
+		t.Fatal("机箱读数已过期 30 秒，应判失联")
+	}
+}
+
+// TestStaleSpeedFloor 失联时抬到中高档，而不是停在曲线最低点。
+// 兜底 30°C 对 35–75 的 CPU 曲线算出来只有 50/255，等于「默认机器是凉的」。
+func TestStaleSpeedFloor(t *testing.T) {
+	f := &FanController{}
+	base := f.CalculateSpeed(tempFallback, 35, 75, 50, 255)
+	if base != 50 {
+		t.Fatalf("兜底温度在曲线最低点应为 50，got %d", base)
+	}
+	if got := max(base, tempStaleSpeed); got != tempStaleSpeed {
+		t.Fatalf("失联应抬到 %d，got %d", tempStaleSpeed, got)
+	}
+	if tempStaleSpeed >= 255 {
+		t.Fatal("失联下限不应等于满转：满了就分不清「故障升档」和「真的过热」")
 	}
 }
