@@ -189,15 +189,26 @@ docker compose up -d screen   # privileged + /dev/fb0 + host 网络
 
 遇到问题请回退方式 A。
 
-### 方式 D：fpk 应用包（飞牛应用中心形态）
+### 方式 D：fpk 应用包（飞牛应用中心）
 
-不懂命令行的人能「点一下装好」的形态，但要走飞牛官方 `fnpack` 打包并逐固件实测。本仓库暂未附带打包配置，现在请走方式 A。
+不用碰命令行：从 [Releases](https://github.com/mingyangbest/r1-frontscreen/releases) 下载 `r1-frontscreen-1.0.1.fpk`，在飞牛应用中心手动安装。包是自带的，SDL2 运行库和中文字体都在里面，纯净系统也能装。
+
+也可以自己打包，配置在 `deploy/fnos/`：
+
+```bash
+cd deploy/fnos
+VERSION=1.0.1 COMMIT=$(git rev-parse --short HEAD) ./build.sh
+```
+
+需要飞牛官方 `fnpack` 和 SDL2 开发文件。脚本会收集依赖库、字体，最后用 `fnpack build` 出包，产物约 17 MB。
+
+> 应用中心不接受同版本覆盖：改了内容要先改 `deploy/fnos/manifest` 里的 `version` 再打包，否则装上去的还是旧包。
 
 ## Web 控制面板
 
 启动后浏览器访问 `http://<设备IP>:8080`。面板用 `X-Token` 头鉴权，首次访问会提示输入一次，之后存在浏览器本地。
 
-**怎么拿令牌**：在设备屏幕上滑到「系统」页，点一下「控制」卡里的「面板令牌」一行，屏上显示明文 10 秒。也可以直接读文件：`sudo grep token /etc/r1-toolbox/config.yaml`。
+**怎么拿令牌**：在设备屏幕上滑到「系统」页，点一下「控制」卡里的「面板令牌」一行，屏上显示明文 10 秒。也可以直接读配置文件，路径随安装方式不同，见下面的 [配置](#配置) 一节。
 
 令牌只接受 `X-Token` 头，不走 URL 参数，避免被访问日志抄走。连续 8 次错误会锁定该 IP 5 分钟。
 
@@ -225,9 +236,10 @@ screen.example.com {
 }
 ```
 
-**令牌没有轮换接口。** 泄露后手改配置文件并重启服务：
+**令牌没有轮换接口。** 泄露后手改配置文件并重启服务（路径与重启方式见 [配置](#配置)）：
 
 ```bash
+# install.sh 装法
 sudo sed -i 's/^\(\s*token:\).*/\1 换成新的8位令牌/' /etc/r1-toolbox/config.yaml
 sudo systemctl restart r1-toolbox
 ```
@@ -236,7 +248,14 @@ sudo systemctl restart r1-toolbox
 
 ## 配置
 
-配置文件在 `/etc/r1-toolbox/config.yaml`，程序每 5 秒热重载，改完即生效。字段说明见 [`config.example.yaml`](config.example.yaml)。
+配置与数据的位置取决于安装方式，别按错地方找：
+
+| 装法 | 配置文件 | 数据（历史库 / 告警记录） | 重启 |
+|---|---|---|---|
+| `install.sh`（systemd） | `/etc/r1-toolbox/config.yaml` | `/var/lib/r1-toolbox/` | `sudo systemctl restart r1-toolbox` |
+| fpk（应用中心） | `/vol1/@appconf/r1-frontscreen/config.yaml` | `/vol1/@appdata/r1-frontscreen/` | 应用中心里停止再启动，或 `sudo appcenter-cli stop r1-frontscreen && sudo appcenter-cli start r1-frontscreen` |
+
+程序每 5 秒热重载，改完即生效。字段说明见 [`config.example.yaml`](config.example.yaml)。
 
 天气数据来自[心知天气](https://www.seniverse.com/)免费接口，API Key 继承自上游项目（已随上游公开）。如失效，可自行注册并替换 `internal/netinfo/netinfo.go` 中的 `senKey`。
 
