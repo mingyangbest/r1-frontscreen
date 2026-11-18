@@ -17,6 +17,17 @@
 //	  - 故障(crit)珊瑚底白字、预警(warn)沙金底深字
 //	  - 屏上只显示最严重一项 + 「共 N 项」，清单放面板
 //
+//	2026-11-18 修补（11-14 凌晨误报复盘，4 处）：
+//	  1. 恢复推送改报实时读数 —— 旧版把触发文案原样回放，
+//	     "已恢复：温度 93°C (阈值 90)" 被误读成恢复时仍是 93°C
+//	  2. 恢复与触发同防抖，且数据源失联不再算恢复 —— 旧版触发要连续
+//	     Debounce 轮越界、恢复只看 1 轮，不对称；温度源一抖（CPUTemp=0，
+//	     11-04 出现过"温度源失联"）就把活跃告警假"恢复"
+//	  3. 触发推送被静默窗吞掉时，配对恢复不再单发 —— 旧版 11-14 00:04
+//	     的触发被吞、00:06 的恢复却发出去了，用户看到没有前因的"已恢复"
+//	  4. 修标题判断 —— 旧版 a.Text[:6] == "已恢复" 按字节截取（"已恢复"
+//	     是 9 字节 UTF-8），比较永不成立，恢复推送标题一直是"R1异常"
+//
 // ============================================================
 package alerts
 
@@ -115,37 +126,41 @@ type Config struct {
 	TempWarn, TempCrit int
 	DiskWarn           int
 	BarkOn             bool
-	Debounce           int           // 连续越界次数（≥1）
-	Silence            time.Duration // 同 key 静默期
+	Debounce           int           // 连续越界/回落轮次数（≥1），触发与恢复共用
+	Silence            time.Duration // 触发推送的最小间隔；恢复推送不看此窗，但要求触发推送真的发出去过
 }
 
 // Engine 状态机。Run 在独立协程里周期 Evaluate。
 type Engine struct {
-	mu       sync.Mutex
-	cfg      func() Config
-	strikes  map[string]int
-	lastRPM  [2]int  // 上一轮转速 —— 停转判定是"从有掉到 0"
-	fanWas   [2]bool // 上轮是否有转速
-	active   map[string]Alert
-	lastPush map[string]time.Time
-	logPath  string
-	notifier Notifier
-	onChange func(*View) // 活跃集变化时回调（main 用它推给渲染器）
-	kick     chan struct{}
+	mu            sync.Mutex
+	cfg           func() Config
+	strikes       map[string]int  // 连续越界轮数 —— 触发防抖
+	okStrikes     map[string]int  // 连续回落轮数 —— 恢复防抖（2026-11-18 起与触发对称）
+	pushedTrigger map[string]bool // 触发推送是否真的发出去过（防"孤儿恢复"）
+	lastRPM       [2]int          // 上一轮转速 —— 停转判定是"从有掉到 0"
+	fanWas        [2]bool         // 上轮是否有转速
+	active        map[string]Alert
+	lastPush      map[string]time.Time
+	logPath       string
+	notifier      Notifier
+	onChange      func(*View) // 活跃集变化时回调（main 用它推给渲染器）
+	kick          chan struct{}
 
 	now func() time.Time // 测试可注入
 }
 
 func NewEngine(cfg func() Config, logPath string, notifier Notifier) *Engine {
 	return &Engine{
-		cfg:      cfg,
-		strikes:  map[string]int{},
-		active:   map[string]Alert{},
-		lastPush: map[string]time.Time{},
-		logPath:  logPath,
-		notifier: notifier,
-		kick:     make(chan struct{}, 1),
-		now:      time.Now,
+		cfg:           cfg,
+		strikes:       map[string]int{},
+		okStrikes:     map[string]int{},
+		pushedTrigger: map[string]bool{},
+		active:        map[string]Alert{},
+		lastPush:      map[string]time.Time{},
+		logPath:       logPath,
+		notifier:      notifier,
+		kick:          make(chan struct{}, 1),
+		now:           time.Now,
 	}
 }
 
@@ -195,6 +210,8 @@ func (e *Engine) Evaluate(in Inputs) {
 		had := len(e.active)
 		e.active = map[string]Alert{}
 		e.strikes = map[string]int{}
+		e.okStrikes = map[string]int{}
+		e.pushedTrigger = map[string]bool{}
 		e.mu.Unlock()
 		if had > 0 {
 			if e.onChange != nil {
@@ -219,19 +236,34 @@ func (e *Engine) Evaluate(in Inputs) {
 	}
 	var cands []cand
 
+	// 实时读数文案（2026-11-18）：恢复推送报当前值，不回放触发时的旧数字。
+	// smart/docker/fan/net 没有可报的实时数值，用固定语义文案。
+	live := map[string]string{
+		"smart":  "已恢复：磁盘恢复正常",
+		"docker": "已恢复：容器恢复正常",
+		"fan":    "已恢复：风扇恢复转动",
+		"net":    "已恢复：公网连接恢复",
+	}
+
 	if in.CPUTemp > 0 {
-		if t := max(in.CPUTemp, in.MaxDiskTemp); t >= float64(cfg.TempCrit) {
+		t := max(in.CPUTemp, in.MaxDiskTemp)
+		if t >= float64(cfg.TempCrit) {
 			cands = append(cands, cand{"temp", SevCrit,
 				fmt.Sprintf("温度 %d°C（阈值 %d）", int(t), cfg.TempCrit)})
 		} else if t >= float64(cfg.TempWarn) {
 			cands = append(cands, cand{"temp", SevWarn,
 				fmt.Sprintf("温度 %d°C（阈值 %d）", int(t), cfg.TempWarn)})
 		}
+		// 恢复判据对任何级别都是 t < TempWarn，所以这里报 TempWarn
+		live["temp"] = fmt.Sprintf("已恢复：当前温度 %d°C（低于阈值 %d）", int(t), cfg.TempWarn)
 	}
 
 	if in.MaxVolumePct >= float64(cfg.DiskWarn) && in.MaxVolumeName != "" {
 		cands = append(cands, cand{"disk", SevWarn,
 			fmt.Sprintf("容量 %d%% · %s", int(in.MaxVolumePct), in.MaxVolumeName)})
+	}
+	if in.MaxVolumeName != "" {
+		live["disk"] = fmt.Sprintf("已恢复：当前容量 %d%% · %s", int(in.MaxVolumePct), in.MaxVolumeName)
 	}
 
 	if len(in.SMARTBad) > 0 {
@@ -280,11 +312,25 @@ func (e *Engine) Evaluate(in Inputs) {
 	defer e.mu.Unlock()
 
 	seen := map[string]bool{}
-	var changed bool
 	for _, c := range cands {
 		seen[c.key] = true
+	}
+	// 数据源失联 ≠ 恢复正常（2026-11-18）：温度读不到 / 卷列表为空时，
+	// 本轮既不算越界也不算回落，活跃告警保持原状等下一轮。
+	// （"没有明确结论不下结论"对恢复方向同样适用）
+	unknown := map[string]bool{}
+	if !seen["temp"] && in.CPUTemp <= 0 {
+		unknown["temp"] = true
+	}
+	if !seen["disk"] && in.MaxVolumeName == "" {
+		unknown["disk"] = true
+	}
+
+	var changed bool
+	for _, c := range cands {
 		if _, ok := e.active[c.key]; ok {
 			e.strikes[c.key] = 0 // 已触发，防抖计数清零
+			delete(e.okStrikes, c.key)
 			continue
 		}
 		e.strikes[c.key]++
@@ -293,22 +339,32 @@ func (e *Engine) Evaluate(in Inputs) {
 		}
 		a := Alert{Key: c.key, Sev: c.sev, Text: c.txt, Since: now}
 		e.active[c.key] = a
+		delete(e.okStrikes, c.key)
 		changed = true
 		e.record(Event{At: now, Kind: "trigger", Key: c.key, Sev: c.sev, Text: c.txt})
-		e.push(cfg, a)
+		e.push(cfg, "trigger", a)
 	}
 
-	// ---- 恢复：上轮越界、本轮不在候选里 ----
+	// ---- 恢复：连续 cfg.Debounce 轮不越界才算恢复（与触发对称）----
+	// 单轮毛刺既触发不了也不会触发恢复，90°C 附近抖动不再来回推送。
 	for key, a := range e.active {
-		if seen[key] {
+		if seen[key] || unknown[key] {
+			continue
+		}
+		e.okStrikes[key]++
+		if e.okStrikes[key] < cfg.Debounce {
 			continue
 		}
 		delete(e.active, key)
 		delete(e.strikes, key)
-		delete(e.lastPush, key)
+		delete(e.okStrikes, key)
 		changed = true
-		e.record(Event{At: now, Kind: "recover", Key: key, Sev: a.Sev, Text: a.Text})
-		e.push(cfg, Alert{Key: key, Sev: a.Sev, Text: "已恢复：" + a.Text})
+		txt := live[key]
+		if txt == "" {
+			txt = "已恢复：" + a.Text // 无实时读数的规则退回触发文案
+		}
+		e.record(Event{At: now, Kind: "recover", Key: key, Sev: a.Sev, Text: txt})
+		e.push(cfg, "recover", Alert{Key: key, Sev: a.Sev, Text: txt})
 	}
 
 	if changed {
@@ -345,23 +401,30 @@ func (e *Engine) Snapshot() []Alert {
 	return v.Alerts
 }
 
-// push 静默期外推一条。触发与恢复共用静默窗 —— 同一个 key 30 分钟内
-// 反复横跳只报第一次，否则夜里风扇抖一下能推一宿。
-func (e *Engine) push(cfg Config, a Alert) {
+// push 静默期外推一条（2026-11-18 起 kind 区分触发/恢复，标题随之分开）：
+//   - 触发：受静默窗限制；被吞掉时 pushedTrigger 不置位
+//   - 恢复：不看静默窗（恢复值得报），但前提是那次触发真的推出去过，
+//     否则用户会看到一条没有前因的"已恢复"。恢复推送记入静默窗，
+//     与旧版"触发与恢复共用静默窗"的防轰炸意图一致
+func (e *Engine) push(cfg Config, kind string, a Alert) {
 	if !cfg.BarkOn || e.notifier == nil {
 		return
 	}
-	if t, ok := e.lastPush[a.Key]; ok && e.now().Sub(t) < cfg.Silence {
+	if kind == "trigger" {
+		if t, ok := e.lastPush[a.Key]; ok && e.now().Sub(t) < cfg.Silence {
+			return // 静默吞掉：不发；对应的恢复推送也因此不发
+		}
+		e.lastPush[a.Key] = e.now()
+		e.pushedTrigger[a.Key] = true
+		go func() { _ = e.notifier.Push("R1 异常", a.Text) }()
 		return
 	}
+	if !e.pushedTrigger[a.Key] {
+		return // 触发当时被静默，这条恢复不单发
+	}
+	delete(e.pushedTrigger, a.Key)
 	e.lastPush[a.Key] = e.now()
-	go func() {
-		verb := "异常"
-		if a.Text[:6] == "已恢复" {
-			verb = "恢复"
-		}
-		_ = e.notifier.Push("R1 "+verb, a.Text)
-	}()
+	go func() { _ = e.notifier.Push("R1 恢复", a.Text) }()
 }
 
 // record 追加一条事件到 JSONL。写失败只打标准错误 —— 记录是附属品，
