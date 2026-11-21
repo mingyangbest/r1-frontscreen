@@ -1278,6 +1278,141 @@ func (c *Canvas) Graph(x, y, w, h int, data []float64, maxV float64, window int,
 	c.FillCircle(lx, ly, 4.2, line)
 }
 
+// GraphByValue 与 Graph 同构，但每一列的颜色由该列数值决定（colFn），
+// 用于「按区间着色」的折线：CPU 负载线的每一段按它自己的读数取
+// 湖蓝/沙金/珊瑚。网格、底板、末端脉冲点的位置算法与 Graph 逐行一致，
+// 只是线色与面积色改成逐列 colFn(v)；colFn 内部负责四舍五入判档。
+func (c *Canvas) GraphByValue(x, y, w, h int, data []float64, maxV float64, window int,
+	colFn func(float64) RGBA, fillA float64) {
+
+	if w <= 1 || h <= 1 || len(data) == 0 || !c.clipVisible(x, y, w, h) {
+		return
+	}
+	if window < 2 || len(data) < window {
+		window = len(data)
+	}
+	if window < 2 {
+		return
+	}
+	if maxV <= 0 {
+		for _, v := range data {
+			if v > maxV {
+				maxV = v
+			}
+		}
+		if maxV <= 0 {
+			maxV = 1
+		}
+	}
+
+	// 网格：与 Graph 相同，3 条 20/255 白线
+	grid := RGBA{255, 255, 255, 20}
+	for i := 1; i <= 3; i++ {
+		gy := y + h*i/4
+		for gx := 0; gx < w; gx++ {
+			c.Blend(x+gx, gy, grid, 1)
+		}
+	}
+
+	n := len(data)
+	start := window - n
+	if start < 0 {
+		start = 0
+	}
+	baseY := y + h - 1
+
+	cx0, cx1 := c.clampX(x, x+w-1)
+	prevPy := -1
+	for col := cx0 - x; col <= cx1-x; col++ {
+		t := float64(col) / float64(w-1) * float64(window-1)
+		idx := int(t)
+		rel := float64(idx) - float64(start)
+		if rel < -1 || rel+1 > float64(n) {
+			continue
+		}
+		i0 := int(rel)
+		i1 := i0 + 1
+		if i0 < 0 {
+			i0 = 0
+		}
+		if i1 >= n {
+			i1 = n - 1
+		}
+		if i0 >= n {
+			continue
+		}
+		f := t - float64(idx)
+		v := data[i0]*(1-f) + data[i1]*f
+		if v < 0 {
+			v = 0
+		}
+		if v > maxV {
+			v = maxV
+		}
+		line := colFn(v)
+		py := baseY - int(v/maxV*float64(h-1)+0.5)
+		if py < y {
+			py = y
+		}
+		px := x + col
+		areaTop := py
+		if prevPy >= 0 && prevPy < areaTop {
+			areaTop = prevPy
+		}
+		if fillA > 0 {
+			fy0, fy1 := c.clampY(areaTop, baseY)
+			span := float64(baseY - areaTop)
+			if span < 1 {
+				span = 1
+			}
+			for yy := fy0; yy <= fy1; yy++ {
+				tt := float64(yy-areaTop) / span
+				k := 1 - tt
+				if k <= 0 {
+					break
+				}
+				c.Blend(px, yy, line, fillA*k)
+			}
+		}
+		lo, hi := py, py
+		if prevPy >= 0 {
+			lo, hi = py, prevPy
+			if lo > hi {
+				lo, hi = hi, lo
+			}
+		}
+		for yy := lo; yy <= hi; yy++ {
+			a := 1.0
+			if yy != py {
+				a = 0.9
+			}
+			c.Blend(px, yy, line, a)
+		}
+		c.Blend(px, py-1, line, 0.45)
+		c.Blend(px, hi+1, line, 0.45)
+		prevPy = py
+	}
+
+	// 末端脉冲点取末值颜色
+	last := n - 1
+	lv := data[last]
+	if lv < 0 {
+		lv = 0
+	}
+	if lv > maxV {
+		lv = maxV
+	}
+	lastCol := colFn(lv)
+	lt := 0.0
+	if window > 1 {
+		lt = float64(start+last) / float64(window-1)
+	}
+	lx := float64(x) + lt*float64(w-1)
+	ly := float64(baseY) - lv/maxV*float64(h-1)
+	c.FillCircle(lx, ly, 11, WithA(lastCol, 40))
+	c.FillCircle(lx, ly, 4.2, lastCol)
+}
+
 // ------------------------------------------------------------
 //
 //	Sprite —— 离屏小图，用于缓存静态元素

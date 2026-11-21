@@ -241,6 +241,7 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 			unit  string
 			v     float64
 			hue   RGBA
+			colFn func(float64) RGBA // 数值着色：CPU/内存走负载阈值，温度走温度阈值
 		}
 		cpu := clamp(d.Ease("env.cpu", m.CPUPercent), 0, 100)
 		mem := clamp(d.Ease("env.mem", m.MemPercent), 0, 100)
@@ -251,9 +252,9 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 			tempStr, tempUnit = fmt.Sprintf("%.0f", temp), "°"
 		}
 		cards := []mini{
-			{"CPU", fmt.Sprintf("%.0f", cpu), "%", cpu, colSlate},
-			{"内存", fmt.Sprintf("%.0f", mem), "%", mem, colRose},
-			{"温度", tempStr, tempUnit, temp, colSand},
+			{"CPU", fmt.Sprintf("%.0f", cpu), "%", cpu, colSlate, loadColor},
+			{"内存", fmt.Sprintf("%.0f", mem), "%", mem, colRose, loadColor},
+			{"温度", tempStr, tempUnit, temp, colSand, tempColor},
 		}
 		for i, mc := range cards {
 			cx := DPadX + i*(envMiniW+envMiniGap)
@@ -262,11 +263,11 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 			// 18px 时「内存」墨迹 17px 宽 33px，参考图是 14.5 / 28 —— 小卡只有
 			// 100 宽，18px 的标题会跟数字抢地方，参考图这里本来就降了一档。
 			drawTrackedTop(c, fs, mc.label, cx+DPad, envCardsY+13, FzCard, mc.hue, 0)
-			// 数字：墨迹顶 +48，粗体；颜色按读数走阈值（<50 偏灰白 / >=50 沙金
-			// / >=80 珊瑚），放不下自动降一档
+			// 数字：墨迹顶 +48，粗体；颜色按读数阈值三色（湖蓝/沙金/珊瑚），
+			// CPU/内存走负载线 50/80，温度走温度线 70/90，放不下自动降一档
 			sz := numFit(fs, mc.txt, mc.unit, envMiniW-2*DPad, FzNum)
 			DrawPartsTop(c, fs, cx+DPad, envCardsY+48, sz, []TPart{
-				{S: mc.txt, Col: valColor(mc.v), Latin: true, Bold: true},
+				{S: mc.txt, Col: mc.colFn(mc.v), Latin: true, Bold: true},
 				{S: mc.unit, Col: colDim, Latin: true, Size: FzUnit, Gap: 3},
 			})
 			// 进度条：+85，高 4，内缩 12（参考图 321..324，3.5px 四舍五入到 4）
@@ -287,20 +288,22 @@ func (p *EnvPage) Draw(c *Canvas, d *DrawCtx) {
 				peak = v
 			}
 		}
-		DMetaR(c, fs, DPadX+DCardW, envHistY+16, fmt.Sprintf("峰值 %.0f%%", peak), colDim)
+		// 峰值同样走 CPU 负载三色（湖蓝/沙金/珊瑚），与折线、当前值同源。
+		DMetaR(c, fs, DPadX+DCardW, envHistY+16, fmt.Sprintf("峰值 %.0f%%", peak), loadColor(peak))
 
 		// 曲线框 408..518（h=110）：三条网格实测在 435.75 / 463.25 / 490.75，
 		// 等距 27.5 → 框高 110、框顶 408。框底 518 之下 17px 才是「当前」。
 		c.PlotFloor(DPadX+DPad, envHistY+52, DCardW-2*DPad, 110, colSage)
-		c.Graph(DPadX+DPad, envHistY+52, DCardW-2*DPad, 110,
-			m.CPUHistory, autoTop(m.CPUHistory, 20), 60, colSage, 0.12)
+		// 折线按每个数据点所属区间着色：loadColor 内部四舍五入判档。
+		c.GraphByValue(DPadX+DPad, envHistY+52, DCardW-2*DPad, 110,
+			m.CPUHistory, autoTop(m.CPUHistory, 20), 60, loadColor, 0.12)
 
 		// 当前值：墨迹顶 +179（曲线底 +140 之下 39），与卡底留 17。
-		// 数值同样走阈值色 —— 它和上面三张小卡说的是同一件事。
+		// 数值同样走负载三色 —— 它和上面三张小卡说的是同一件事。
 		cpuNow := d.Ease("env.cpu", m.CPUPercent)
 		DrawPartsTop(c, fs, DPadX+DPad, envHistY+179, FzCurrent, []TPart{
 			{S: "当前", Col: colDim},
-			{S: fmt.Sprintf("%.0f%%", cpuNow), Col: valColor(cpuNow), Latin: true, Gap: 7},
+			{S: fmt.Sprintf("%.0f%%", cpuNow), Col: loadColor(cpuNow), Latin: true, Gap: 7},
 		})
 	}
 
@@ -412,9 +415,8 @@ func (p *DetailPage) CardRects() []Rect {
 	}
 }
 
-// 详情页四核条原先各有一个身份色（C0 灰蓝 / C1 珊瑚 / C2 浅灰蓝 / C3 灰绿）。
-// 2026-10-31 起改成**只按负载着色**（<50 绿 / >=50 黄 / >=80 红），见 barColor：
-// C1 的珊瑚和告警红撞色，"变红"就没有信号意义了；哪个核看左边 C0~C3 标签即可。
+// 详情页四核条只按负载着色（湖蓝/沙金/珊瑚），见 loadColor：条与右侧数值同源，
+// 哪个核看左边 C0~C3 标签即可。
 
 func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 	fs := d.Fonts
@@ -436,7 +438,7 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 		// 换成总占用率，与下面四根条直接呼应，一眼就懂。
 		cpuNow := clamp(d.Ease("dt.cpu", m.CPUPercent), 0, 100)
 		DMetaR(c, fs, DPadX+DCardW, dtCpuY+16,
-			fmt.Sprintf("总占用 %.0f%%", cpuNow), valColor(cpuNow))
+			fmt.Sprintf("总占用 %.0f%%", cpuNow), loadColor(cpuNow))
 
 		cores := m.CPUCores
 		n := coreCount(m)
@@ -452,11 +454,10 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 			}
 			DrawPartsTop(c, fs, DPadX+DPad, cy-6, FzUnit,
 				[]TPart{{S: fmt.Sprintf("C%d", i), Col: colSub, Latin: true}})
-			// 条的颜色只按负载走阈值（洋哥 2026-10-31：<50 绿 / >=50 黄 / >=80 红），
-			// 不再用"该核身份色" —— 理由见文件里 coreBarCols 那段说明。
+			// 条与右侧数字同源，都按负载三色（湖蓝/沙金/珊瑚）着色。
 			c.Bar(DPadX+51, cy-6, 205, 5, 2, v/100, colTrack, barColor(v))
 			DrawPartsTopR(c, fs, DPadX+DCardW-DPad, cy-6, FzUnit,
-				[]TPart{{S: fmt.Sprintf("%.0f%%", v), Col: valColor(v), Latin: true}})
+				[]TPart{{S: fmt.Sprintf("%.0f%%", v), Col: loadColor(v), Latin: true}})
 		}
 	}
 
@@ -468,13 +469,13 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 		// 可见量，本来就是给"当前用了多少"做分母的。
 		DCardTitle(c, fs, DPadX, dtMemY+13, "内存", colRose)
 		memPct := clamp(d.Ease("dt.mp", m.MemPercent), 0, 100)
-		DMetaR(c, fs, DPadX+DCardW, dtMemY+16, fmt.Sprintf("%.0f%%", memPct), valColor(memPct))
+		DMetaR(c, fs, DPadX+DCardW, dtMemY+16, fmt.Sprintf("%.0f%%", memPct), loadColor(memPct))
 
 		// 大数字：已用容粗体、总量细体次白 —— 一眼分得清"占了多少 / 共多少"。
 		// 墨迹顶 +58，字底 +93；单位降两档用 Gap 顶住，不靠空格。
-		// 已用容按占用率着色（>=50 沙金 / >=80 珊瑚），低于阈值时是偏灰白。
+		// 已用容按占用率走负载三色（<50 湖蓝 / 50~79 沙金 / >=80 珊瑚）。
 		DrawPartsTop(c, fs, DPadX+DPad, dtMemY+58, FzData, []TPart{
-			{S: fmt.Sprintf("%.1f", d.Ease("dt.mu", m.MemUsedGB)), Col: valColor(memPct), Latin: true, Bold: true},
+			{S: fmt.Sprintf("%.1f", d.Ease("dt.mu", m.MemUsedGB)), Col: loadColor(memPct), Latin: true, Bold: true},
 			{S: "GB", Col: colDim, Latin: true, Size: FzUnit, Gap: 3},
 			{S: "/", Col: colDim, Latin: true, Size: FzUnit, Gap: 10},
 			{S: fmt.Sprintf("%.1f", m.MemTotalGB), Col: colSub, Latin: true, Gap: 10},
@@ -534,14 +535,15 @@ func (p *DetailPage) Draw(c *Canvas, d *DrawCtx) {
 		cpuT := clamp(d.Ease("dt.ct", m.CPUTemp), 0, 120)
 		diskT := clamp(d.Ease("dt.disk", m.Disk.MaxDiskTemp()), 0, 120)
 		// 双列：数字墨迹顶 +61（48px 粗体），标签落在数字的视觉中线上。
-		// 温度同样走阈值着色：>=50 沙金、>=80 珊瑚（洋哥 2026-10-30）。
+		// 温度走独立阈值：<70 湖蓝 / 70~89 沙金 / >=90 珊瑚（洋哥 2026-11-22），
+		// 与首页温度小卡同一规则；读不到时 tempText 画「—」不着色。
 		nw := DrawPartsTop(c, fs, DPadX+DPad, dtTempY+61, FzData, []TPart{
-			{S: tempText(cpuT), Col: valColor(cpuT), Latin: true, Bold: true},
+			{S: tempText(cpuT), Col: tempColor(cpuT), Latin: true, Bold: true},
 		})
 		DrawPartsTop(c, fs, DPadX+DPad+nw+7, dtTempY+76, FzUnit,
 			[]TPart{{S: "CPU", Col: colDim, Latin: true}})
 		dw := DrawPartsTop(c, fs, DPadX+168, dtTempY+61, FzData, []TPart{
-			{S: tempText(diskT), Col: valColor(diskT), Latin: true, Bold: true},
+			{S: tempText(diskT), Col: tempColor(diskT), Latin: true, Bold: true},
 		})
 		DrawPartsTop(c, fs, DPadX+168+dw+7, dtTempY+76, FzUnit,
 			[]TPart{{S: "硬盘", Col: colDim}})
